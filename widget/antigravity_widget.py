@@ -224,7 +224,7 @@ class AntigravityWidget:
 
         # Meta line (Workspace / Model engine)
         self.meta_lbl = tk.Label(
-            self.body, text="引擎: Google Gemini (Antigravity 原生) | 状态: 监听就绪",
+            self.body, text="引擎: gemini-3.8-flash (Google 原生) | 状态: 监听就绪",
             font=("Microsoft YaHei", 8), bg=BG_MAIN, fg=TEXT_MUTED,
             anchor="w"
         )

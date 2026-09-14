@@ -38,6 +38,7 @@ LOG_FILE = os.environ.get(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "antigravity.log")
 )
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash").strip()
 BASE_URL = os.environ.get("ANTIGRAVITY_BASE_URL", "http://127.0.0.1:10100/v1")
 DEFAULT_MODEL = os.environ.get("ANTIGRAVITY_MODEL", "agentrouter/glm-5.3")
 TASKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tasks")
@@ -48,7 +49,8 @@ def get_engine_name() -> str:
     """返回当前底层运行的推理引擎名称"""
     key = os.environ.get("GEMINI_API_KEY", GEMINI_API_KEY)
     if key and key.strip():
-        return "Google Gemini (Antigravity 原生)"
+        model = os.environ.get("GEMINI_MODEL", GEMINI_MODEL).strip() or "gemini-3.8-flash"
+        return f"{model} (Google 原生)"
     return DEFAULT_MODEL
 
 # Safe auto-detach timeout: 180s (Codex client times out at 300s, giving 120s buffer)
@@ -197,8 +199,10 @@ async def _execute_antigravity_core(
                 raise last_err
 
     if api_key:
+        target_model = os.environ.get("GEMINI_MODEL", GEMINI_MODEL).strip() or "gemini-3.8-flash"
         gemini_config = LocalAgentConfig(
             api_key=api_key,
+            model=target_model,
             system_instructions=sys_inst,
             capabilities=CapabilitiesConfig(
                 file_reads=True,
