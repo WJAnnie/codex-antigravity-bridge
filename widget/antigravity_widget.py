@@ -13,6 +13,16 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk
 
+# Enable DPI awareness on Windows for crisp high-resolution rendering
+try:
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        ctypes.windll.user32.SetProcessDPIAware()
+except Exception:
+    pass
+
 # Resolve log file path dynamically
 def resolve_log_file() -> str:
     if "ANTIGRAVITY_LOG_FILE" in os.environ:
@@ -55,13 +65,14 @@ class AntigravityWidget:
         
         # Screen position (top right corner)
         screen_w = self.root.winfo_screenwidth()
-        x = screen_w - self.width - 30
+        x = max(50, screen_w - self.width - 30)
         y = 50
         self.root.geometry(f"{self.width}x{self.height_compact}+{x}+{y}")
         self.root.configure(bg=BG_MAIN)
         self.root.overrideredirect(True)  # Frameless
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", 0.95)
+        self.root.lift()
 
         # Window drag handlers
         self._offset_x = 0
@@ -331,9 +342,19 @@ class AntigravityWidget:
 
 
 def main():
-    root = tk.Tk()
-    app = AntigravityWidget(root)
-    root.mainloop()
+    try:
+        root = tk.Tk()
+        app = AntigravityWidget(root)
+        root.mainloop()
+    except Exception as e:
+        err_log = os.path.expanduser("~/.codex/mcp_servers/antigravity_widget_err.log")
+        try:
+            with open(err_log, "a", encoding="utf-8") as f:
+                f.write(f"[{datetime.now()}] Widget Error: {e}\n")
+                import traceback
+                traceback.print_exc(file=f)
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()

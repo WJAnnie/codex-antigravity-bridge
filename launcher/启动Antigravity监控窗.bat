@@ -1,36 +1,34 @@
 @echo off
-chcp 65001 >nul
-title Antigravity 监控窗启动器
+setlocal
 
-:: 优先寻找 pythonw（后台无黑窗）
-where pythonw >nul 2>nul
-if %ERRORLEVEL% EQU 0 (
-    set "PY=pythonw"
-) else (
-    if exist "%LOCALAPPDATA%\Programs\Python\Python311\pythonw.exe" (
-        set "PY=%LOCALAPPDATA%\Programs\Python\Python311\pythonw.exe"
-    ) else (
-        where python >nul 2>nul
-        if %ERRORLEVEL% EQU 0 (
-            set "PY=python"
-        ) else (
-            echo 未检测到 Python，请确保已安装 Python 并添加到环境变量。
-            pause
-            exit /b 1
-        )
+set "SCRIPT=%USERPROFILE%\.codex\mcp_servers\antigravity_widget.py"
+if not exist "%SCRIPT%" (
+    if exist "D:\codex-antigravity-bridge\widget\antigravity_widget.py" (
+        set "SCRIPT=D:\codex-antigravity-bridge\widget\antigravity_widget.py"
     )
 )
 
-:: 探测监控窗脚本路径
-if exist "%USERPROFILE%\.codex\mcp_servers\antigravity_widget.py" (
-    set "TARGET_SCRIPT=%USERPROFILE%\.codex\mcp_servers\antigravity_widget.py"
-) else if exist "%~dp0..\widget\antigravity_widget.py" (
-    set "TARGET_SCRIPT=%~dp0..\widget\antigravity_widget.py"
-) else (
-    echo 找不到 antigravity_widget.py 脚本！
-    pause
-    exit /b 1
+:: 1. Try Python 3.11 absolute path
+set "PY=%LOCALAPPDATA%\Programs\Python\Python311\pythonw.exe"
+if exist "%PY%" (
+    start "" "%PY%" "%SCRIPT%"
+    exit /b 0
 )
 
-start "" "%PY%" "%TARGET_SCRIPT%"
-exit
+:: 2. Try pythonw in PATH
+where pythonw.exe >nul 2>nul
+if %ERRORLEVEL% equ 0 (
+    start "" pythonw "%SCRIPT%"
+    exit /b 0
+)
+
+:: 3. Fallback to python
+where python.exe >nul 2>nul
+if %ERRORLEVEL% equ 0 (
+    start "" python "%SCRIPT%"
+    exit /b 0
+)
+
+echo [ERROR] Python not found.
+pause
+exit /b 1
