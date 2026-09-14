@@ -440,6 +440,20 @@ class AntigravityWidget:
                     chars = char_match.group(1) if char_match else ""
                     self.meta_lbl.configure(text=f"上次执行成功 (返回 {chars} 字) | 就绪待命")
 
+            elif "[RETRY]" in last_line:
+                self.current_state = "RETRY"
+                self.status_dot.configure(fg="#F59E0B")
+                self.status_text.configure(text="网络闪断自愈中...", fg="#F59E0B")
+                
+                r_match = re.search(r"第\s*(\d+/\d+)\s*次", last_line)
+                r_info = f"[{r_match.group(1)}] " if r_match else "[自愈重试] "
+                
+                w_match = re.search(r"等待\s*([0-9.]+s)", last_line)
+                w_info = f"等待 {w_match.group(1)}" if w_match else "稍候重试"
+                
+                self.task_lbl.configure(text=f"{r_info}捕获代理/上游网络闪断，自动重试中")
+                self.meta_lbl.configure(text=f"状态: 网络自愈中 ({w_info}) | 会话保持不中断")
+
             elif "[ERROR]" in last_line:
                 self.current_state = "ERROR"
                 self.start_timestamp = 0.0
@@ -455,7 +469,7 @@ class AntigravityWidget:
 
     def update_timer(self):
         """实时秒表走字"""
-        if self.current_state == "BUSY" and self.start_timestamp > 0.0:
+        if self.current_state in ("BUSY", "RETRY") and self.start_timestamp > 0.0:
             elapsed = int(time.time() - self.start_timestamp)
             mins = elapsed // 60
             secs = elapsed % 60

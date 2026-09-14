@@ -44,8 +44,43 @@ os.makedirs(TASKS_DIR, exist_ok=True)
 # Safe auto-detach timeout: 180s (Codex client times out at 300s, giving 120s buffer)
 SAFE_SYNC_TIMEOUT = float(os.environ.get("ANTIGRAVITY_SYNC_TIMEOUT", "180.0"))
 
+# Network resilience: auto-retry for transient proxy/gateway drops (502/503/504/connection refused)
+MAX_NETWORK_RETRIES = int(os.environ.get("ANTIGRAVITY_MAX_RETRIES", "3"))
+RETRY_INITIAL_DELAY = float(os.environ.get("ANTIGRAVITY_RETRY_DELAY", "3.0"))
+
 # In-memory background tasks tracker
 _background_tasks: Dict[str, asyncio.Task] = {}
+
+
+def _is_transient_network_error(err_text: str) -> bool:
+    """判断是否为网络闪断、代理重启、网关握手被拒等偶发瞬时异常"""
+    msg = err_text.lower()
+    transient_patterns = [
+        "502",
+        "503",
+        "504",
+        "unable to connect",
+        "is the computer able to access the url",
+        "connection refused",
+        "connection reset",
+        "connection closed",
+        "econnrefused",
+        "econnreset",
+        "etimedout",
+        "timed out",
+        "timeout",
+        "broken pipe",
+        "network unreachable",
+        "host unreachable",
+        "failed to connect",
+        "server_is_overloaded",
+        "bad gateway",
+        "service unavailable",
+        "gateway timeout",
+        "handshake failure",
+        "remote end closed connection",
+    ]
+    return any(p in msg for p in transient_patterns)
 
 
 def log_event(message: str) -> None:
@@ -86,9 +121,10 @@ def _load_task_record(task_id: str) -> Optional[Dict[str, Any]]:
 async def _execute_antigravity_core(
     prompt: str,
     ws: str,
-    system_instructions: Optional[str] = None
+    system_instructions: Optional[str] = None,
+    task_id: Optional[str] = None,
 ) -> str:
-    """底层的 Antigravity 智能体调用逻辑"""
+    """底层的 Antigravity 智能体调用逻辑，内置网络抖动自愈重试引擎"""
     sys_inst = system_instructions or (
         f"你是由 OpenAI Codex 调用的 Google Antigravity 高级专家智能体。\n"
         f"当前工作区路径为：{ws}。\n"
@@ -111,13 +147,40 @@ async def _execute_antigravity_core(
         workspaces=workspaces,
     )
 
-    response_chunks = []
-    async with Agent(config) as agent:
-        response = await agent.chat(prompt)
-        async for token in response:
-            response_chunks.append(token)
+    last_err = None
+    for attempt in range(1, MAX_NETWORK_RETRIES + 1):
+        try:
+            response_chunks = []
+            async with Agent(config) as agent:
+                response = await agent.chat(prompt)
+                async for token in response:
+                    response_chunks.append(token)
 
-    return "".join(response_chunks).strip()
+            return "".join(response_chunks).strip()
+
+        except Exception as e:
+            last_err = e
+            err_msg = str(e)
+            if _is_transient_network_error(err_msg) and attempt < MAX_NETWORK_RETRIES:
+                delay = RETRY_INITIAL_DELAY * (2 ** (attempt - 1))
+                tid_prefix = f" [ASYNC:{task_id}]" if task_id else ""
+                short_err = err_msg.replace("\n", " ").strip()
+                if len(short_err) > 80:
+                    short_err = short_err[:80] + "..."
+                log_event(
+                    f"[RETRY]{tid_prefix} 捕获上游网络/代理闪断 (第 {attempt}/{MAX_NETWORK_RETRIES} 次): "
+                    f"{short_err} | 等待 {delay:.1f}s 后自动自愈重试..."
+                )
+                if task_id:
+                    rec = _load_task_record(task_id)
+                    if rec:
+                        rec["retry_count"] = attempt
+                        rec["last_error"] = short_err
+                        rec["status_detail"] = f"网络闪断自动自愈中 (第 {attempt} 次重试，等待 {delay:.0f}s)"
+                        _save_task_record(rec)
+                await asyncio.sleep(delay)
+                continue
+            raise last_err
 
 
 async def _run_async_worker(
@@ -142,7 +205,7 @@ async def _run_async_worker(
     log_event(f"[START] [ASYNC:{task_id}] 触发任务: {task_type} | 引擎: {DEFAULT_MODEL} | 工作区: {ws} | 任务: {prompt_summary}")
 
     try:
-        result_text = await _execute_antigravity_core(prompt, ws, system_instructions)
+        result_text = await _execute_antigravity_core(prompt, ws, system_instructions, task_id=task_id)
         elapsed = time.time() - start_time
         
         # 写入完整的 Markdown 报告文件
@@ -513,14 +576,16 @@ async def check_antigravity_task(task_id: str, wait_seconds: int = 0) -> str:
     if status in ("RUNNING", "PENDING"):
         start_time = record.get("start_time", time.time())
         running_sec = time.time() - start_time
+        status_detail = record.get("status_detail", "Antigravity 智能体正在后台深入处理，请耐心等候。")
+        retry_tip = f"\n- **自愈进度**: 🛡️ {status_detail}" if record.get("retry_count") else ""
         return (
             f"⏳ **【任务执行中】**\n"
             f"- **任务 ID**: `{task_id}`\n"
             f"- **任务内容**: {summary}\n"
             f"- **开始时间**: {created_at}\n"
             f"- **当前已运行**: {running_sec:.1f} 秒 (约 {running_sec/60:.1f} 分钟)\n"
-            f"- **目标报告**: `{report_file}`\n"
-            f"- **状态**: Antigravity 智能体正在后台深入处理，请耐心等候。"
+            f"- **目标报告**: `{report_file}`{retry_tip}\n"
+            f"- **状态**: {status_detail}"
         )
 
     elif status == "COMPLETED":

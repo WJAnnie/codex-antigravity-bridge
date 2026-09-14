@@ -12,6 +12,7 @@ description: Seamlessly bridge OpenAI Codex / Claude / Cursor with Google Antigr
 - **大任务瞬间秒转（$\ge 3$ 文件）**：0.1 秒内直接以托管模式返回凭据，Codex 零等待。
 - **安全时限熔断托管（180 秒）**：任务若在 180 秒内完成，直接返回结果；若超过 180 秒，在 Codex 的 300 秒极限前自动转入后台继续运行，**从物理上彻底根除 300s 超时中断**！
 - **自动持久化 Markdown 报告**：后台任务完成后，自动生成标准 Markdown 报告至 `<workspace>/.antigravity_reports/<task_id>.md`。
+- **上游网络与代理闪断自愈**：内置指数退避重试机制（自动处理 502/503/504、Clash 代理重启、TCP 闪断等偶发网络抖动），长达数十分钟的多轮任务绝不因 1 秒断网而中断。
 
 ---
 
