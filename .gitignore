@@ -37,3 +37,7 @@ desktop.ini
 .idea/
 *.swp
 *.swo
+
+.tasks/
+*.tasks
+.antigravity_reports/

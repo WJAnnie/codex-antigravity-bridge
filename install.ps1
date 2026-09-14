@@ -1,11 +1,10 @@
-<#
+﻿<#
 .SYNOPSIS
     Codex Antigravity Bridge 一键安装脚本
 .DESCRIPTION
     自动化部署 Antigravity MCP 服务、子智能体配置、桌面悬浮监控窗及快捷方式。
 #>
 
-$ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 Write-Host "==========================================================" -ForegroundColor Cyan
@@ -16,23 +15,26 @@ Write-Host "==========================================================" -Foregro
 Write-Host "`n[1/6] 检查 Python 环境..." -ForegroundColor Yellow
 $py = Get-Command python -ErrorAction SilentlyContinue
 if (-not $py) {
-    Write-Error "❌ 未在 PATH 中找到 python 命令，请先安装 Python 3.10+。"
+    Write-Host "❌ 未在 PATH 中找到 python 命令，请先安装 Python 3.10+。" -ForegroundColor Red
+    exit 1
 }
-$pyVer = python --version
+$pyVer = python --version 2>&1
 Write-Host "  ✔ 检测到: $pyVer" -ForegroundColor Green
 
 # 2. 检查并安装核心 Python 依赖
 Write-Host "`n[2/6] 检查核心依赖 (google-antigravity, mcp)..." -ForegroundColor Yellow
-$deps = @("google-antigravity", "mcp")
-foreach ($dep in $deps) {
-    $check = python -c "import $($dep.Replace('-', '_'))" 2>$null
+
+$checkScript = "import sys; import google.antigravity, mcp; sys.exit(0)"
+python -c $checkScript 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  ⬇ 正在安装依赖: google-antigravity mcp ..." -ForegroundColor Gray
+    python -m pip install google-antigravity mcp --quiet
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ⬇ 正在安装依赖: $dep ..." -ForegroundColor Gray
-        python -m pip install $dep --quiet
-    } else {
-        Write-Host "  ✔ $dep 已就绪" -ForegroundColor Green
+        Write-Host "❌ 依赖安装失败，请手动执行: pip install google-antigravity mcp" -ForegroundColor Red
+        exit 1
     }
 }
+Write-Host "  ✔ 核心依赖已就绪" -ForegroundColor Green
 
 # 3. 创建目录结构
 Write-Host "`n[3/6] 初始化 ~/.codex 目录结构..." -ForegroundColor Yellow
@@ -65,7 +67,6 @@ Write-Host "  ✔ antigravity.toml -> $agentsDir" -ForegroundColor Green
 # 5. 配置 ~/.codex/config.toml
 Write-Host "`n[5/6] 校验 ~/.codex/config.toml MCP 配置..." -ForegroundColor Yellow
 $configFile = Join-Path $codexDir "config.toml"
-$pythonPath = (Get-Command python).Source.Replace("\", "/")
 $targetScriptPath = (Join-Path $mcpDir "antigravity_mcp.py").Replace("\", "/")
 
 $tomlBlock = @"
@@ -101,5 +102,5 @@ Write-Host "==========================================================" -Foregro
 Write-Host "💡 接下来你只需："
 Write-Host "  1. 双击桌面的【启动Antigravity监控窗.bat】开启悬浮监控" -ForegroundColor Yellow
 Write-Host "  2. 重启或打开 Codex，它将自动加载 antigravity MCP" -ForegroundColor Yellow
-Write-Host "  3. 在对话中直接要求 Codex：'请委派 antigravity 审查此代码' 或使用 @antigravity" -ForegroundColor Yellow
+Write-Host "  3. 在对话中直接要求 Codex：'请让 antigravity 异步审查此代码' 或使用 @antigravity" -ForegroundColor Yellow
 Write-Host "==========================================================`n" -ForegroundColor Cyan

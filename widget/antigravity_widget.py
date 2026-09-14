@@ -2,6 +2,7 @@
 Antigravity Desktop Floating Mini-Widget
 Provides a modern, lightweight, always-on-top status widget for monitoring
 Codex -> Antigravity MCP calls in real time with live stopwatches and history.
+Supports both synchronous calls and asynchronous background long tasks.
 """
 
 import os
@@ -46,7 +47,7 @@ class AntigravityWidget:
         self.root.title("Antigravity 监控窗")
         
         # Dimensions and positioning
-        self.width = 340
+        self.width = 350
         self.height_compact = 145
         self.height_expanded = 310
         self.is_expanded = False
@@ -171,7 +172,7 @@ class AntigravityWidget:
         self.history_frame = tk.Frame(self.root, bg=BG_HEADER, padx=10, pady=6)
         
         hist_title = tk.Label(
-            self.history_frame, text="最近 5 次调度明细:",
+            self.history_frame, text="最近 6 次调度明细:",
             font=("Microsoft YaHei", 8, "bold"), bg=BG_HEADER, fg=TEXT_MUTED, anchor="w"
         )
         hist_title.pack(fill="x")
@@ -220,7 +221,7 @@ class AntigravityWidget:
         if not self.history_records:
             self.history_box.insert("end", "暂无历史记录\n")
         else:
-            for rec in self.history_records[-6:]:
+            for rec in self.history_records[-8:]:
                 self.history_box.insert("end", f"{rec}\n")
         self.history_box.configure(state="disabled")
 
@@ -245,7 +246,7 @@ class AntigravityWidget:
                 return
 
             # Keep last history items
-            self.history_records = lines[-8:]
+            self.history_records = lines[-10:]
             if self.is_expanded:
                 self.render_history()
 
@@ -254,7 +255,12 @@ class AntigravityWidget:
             if "[START]" in last_line:
                 self.current_state = "BUSY"
                 self.status_dot.configure(fg=COLOR_BUSY)
-                self.status_text.configure(text="正在思考执行...", fg=COLOR_BUSY)
+                
+                is_async = "[ASYNC" in last_line
+                self.status_text.configure(
+                    text="后台长任务思考中..." if is_async else "正在思考执行...", 
+                    fg=COLOR_BUSY
+                )
                 
                 # Extract task
                 task_part = "任务处理中"
@@ -263,15 +269,16 @@ class AntigravityWidget:
                 elif "列表:" in last_line:
                     task_part = "审查文件: " + last_line.split("列表:")[-1].strip()
                 
-                if len(task_part) > 28:
-                    task_part = task_part[:28] + "..."
-                self.task_lbl.configure(text=f"任务: {task_part}")
+                prefix = "[异步] " if is_async else ""
+                if len(task_part) > 26:
+                    task_part = task_part[:26] + "..."
+                self.task_lbl.configure(text=f"{prefix}任务: {task_part}")
 
                 # Extract model
                 engine_part = "GLM-5.3"
                 if "引擎:" in last_line:
                     engine_part = last_line.split("引擎:")[1].split("|")[0].strip()
-                self.meta_lbl.configure(text=f"引擎: {engine_part} | 正在协同工作中...")
+                self.meta_lbl.configure(text=f"引擎: {engine_part} | 协同运行中...")
 
                 # Timer start
                 if self.start_timestamp == 0.0:
@@ -288,11 +295,14 @@ class AntigravityWidget:
                 dur = dur_match.group(1) if dur_match else ""
                 self.timer_label.configure(text=f"耗时: {dur}" if dur else "")
 
-                # Extract chars
-                char_match = re.search(r"返回字符数:\s*(\d+)", last_line)
-                chars = char_match.group(1) if char_match else ""
-
-                self.meta_lbl.configure(text=f"上次执行成功 (返回 {chars} 字) | 就绪待命")
+                # Extract report or characters
+                if "报告:" in last_line:
+                    rep_name = last_line.split("报告:")[-1].strip()
+                    self.meta_lbl.configure(text=f"报告已生成: {rep_name}")
+                else:
+                    char_match = re.search(r"返回字符数:\s*(\d+)", last_line)
+                    chars = char_match.group(1) if char_match else ""
+                    self.meta_lbl.configure(text=f"上次执行成功 (返回 {chars} 字) | 就绪待命")
 
             elif "[ERROR]" in last_line:
                 self.current_state = "ERROR"
