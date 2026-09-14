@@ -62,14 +62,17 @@ flowchart TD
 - 自动识别并拦截 `502 Bad Gateway`、`503 Service Unavailable`、`504 Gateway Timeout`、`Unable to connect` 等由梯子重启、节点切换或网络抖动引起的瞬时断网。
 - 重试时桌面悬浮窗实时呈现黄色自愈状态并持续计时，重试成功后任务无缝续跑，彻底告别单次网络闪断毁掉整个长任务。
 
-### 🧠 三级递进动态兜底架构 (3-Tier Engine Cascade)
-系统内置高可靠自愈级联调度链路，全自动应对配额限制与网络波动：
-1. **Tier 1 (优先首选)：`gemini-3.8-flash`**：Google 原生最新前沿预览模型。触发每日限流（429）后自动开启 30 分钟冷却期并平滑降级至 Tier 2。
-2. **Tier 2 (次选备用)：`agentrouter/deepseek-v4-flash`**：本地 OpenCodex / AgentRouter 中继引擎。内置 `policy.allow_all()` 全局静默授权与事件循环排空，具备超强长任务耐受力，绝不虚假中断。
-3. **Tier 3 (终极兜底)：`gemini-2.5-flash`**：Google 官方 1500 次/天高配额主力基准模型。在中继端口异常或严重网络故障时瞬间接管，确保 100% 成功交付。
+### 🧠 五级递进智能自愈推理架构 (5-Tier Cascade Architecture)
+系统内置高可靠自愈级联调度链路，全自动应对配额限制、区域封锁与网络波动：
+1. **Tier 1 (前置尝鲜)：`gemini-3.8-flash`**：Google 原生最新预览模型。若触发日限（429）自动冷却 30 分钟；若触发区域限制（400: User location not supported）自动冷却 1 小时屏蔽 Google 原生并交由中继完全接管。
+2. **Tier 2 (本地中继高可用集群 - 三级优先级)**：
+   - **优先级一 (Relay M1)：`agentrouter/gpt-5.6-sol`**：旗舰推理模型，每天北京时间 **0:00、8:00、16:00 限量供应**。额度耗尽（`402 Budget pool quota has been exhausted`）后自动冷却至下一放量批次，平滑无缝流转至优先级二；
+   - **优先级二 (Relay M2)：`agentrouter/deepseek-v4-flash`**：高并发快速编程主力，具备超强长任务耐受力与 `policy.allow_all()` 全局静默授权；
+   - **优先级三 (Relay M3)：`agentrouter/glm-5.3`**：中继终极保底引擎，在 M1/M2 异常时无缝接管。
+3. **Tier 3 (终极原生保底)：`gemini-2.5-flash`**：Google 官方 1500 次/天高配额主力基准模型，在中继不可用且网络环境支持时作为最后底牌。
 
 ### 🎨 暗黑极简桌面悬浮监控窗 (Widget v3)
-- **极简常驻与三级流向**：屏幕常驻显示 `3.8 -> DeepSeek -> 2.5` 状态与动态走字秒表；
+- **极简常驻与五级流向**：屏幕常驻显示 `3.8 -> [Sol/DS/GLM] -> 2.5` 状态与动态走字秒表；
 - **全域交互与自由拉伸**：580px 展开面板，搭载 Canvas 滚动容器与 6px 暗黑细滑块，支持滚轮全域滑动与右下角 `⋰` 自由拉伸；
 - **全状态即时预览与排查**：无论任务处于“执行完成”、“后台运行中”、“异常失败”还是“孤儿中止”，均可一键弹出 Markdown 独立预览窗口查看详情、跟踪日志与完整调用栈。
 

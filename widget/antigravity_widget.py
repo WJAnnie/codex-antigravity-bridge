@@ -938,7 +938,7 @@ class AntigravityWidget:
         self.expand_btn.bind("<Button-1>", self.toggle_expand)
 
         self.engine_mini_lbl = tk.Label(
-            self.bottom_bar, text="3.8 -> DeepSeek -> 2.5", font=("Microsoft YaHei", 8),
+            self.bottom_bar, text="3.8 -> [Sol/DS/GLM] -> 2.5", font=("Microsoft YaHei", 8),
             bg=BG_MAIN, fg=COLOR_TEAL
         )
         self.engine_mini_lbl.pack(side="right")
