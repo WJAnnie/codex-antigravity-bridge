@@ -37,7 +37,7 @@ LOG_FILE = os.environ.get(
     "ANTIGRAVITY_LOG_FILE",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "antigravity.log")
 )
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyCiSYMrpvtCsDWXB16XF4BE3IUGb6by-wg")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 BASE_URL = os.environ.get("ANTIGRAVITY_BASE_URL", "http://127.0.0.1:10100/v1")
 DEFAULT_MODEL = os.environ.get("ANTIGRAVITY_MODEL", "agentrouter/glm-5.3")
 TASKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tasks")
