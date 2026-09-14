@@ -1,14 +1,15 @@
 """
-Antigravity Desktop Floating Mini-Widget
+Antigravity Desktop Floating Mini-Widget v2.1
 Provides a modern, lightweight, always-on-top status widget for monitoring
-Codex -> Antigravity MCP calls in real time with live stopwatches and history.
-Supports both synchronous calls and asynchronous background long tasks.
+Codex -> Antigravity MCP calls in real time with live stopwatches, history,
+and dynamic font scaling (A+ / A- / Ctrl+Wheel).
 """
 
 import os
 import sys
 import time
 import re
+import json
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk
@@ -23,14 +24,15 @@ try:
 except Exception:
     pass
 
-# Resolve log file path dynamically
+# Paths
+CONFIG_FILE = os.path.expanduser("~/.codex/mcp_servers/widget_config.json")
+
 def resolve_log_file() -> str:
     if "ANTIGRAVITY_LOG_FILE" in os.environ:
         return os.environ["ANTIGRAVITY_LOG_FILE"]
     home_log = os.path.expanduser("~/.codex/mcp_servers/antigravity.log")
     if os.path.exists(home_log):
         return home_log
-    # Check repo local
     repo_log = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mcp_servers", "antigravity.log")
     if os.path.exists(repo_log):
         return repo_log
@@ -50,24 +52,36 @@ COLOR_BUSY = "#f9e2af"    # Yellow/Amber
 COLOR_ERR = "#f38ba8"     # Red
 COLOR_ACCENT = "#89b4fa"  # Blue
 
+SCALE_STEPS = [0.9, 1.0, 1.15, 1.3, 1.5, 1.75, 2.0]
+DEFAULT_SCALE_INDEX = 2  # 1.15x by default
+
 
 class AntigravityWidget:
     def __init__(self, root):
         self.root = root
         self.root.title("Antigravity 监控窗")
         
-        # Dimensions and positioning
-        self.width = 350
-        self.height_compact = 145
-        self.height_expanded = 310
+        # Load config
+        self.config = self.load_config()
+        self.scale_idx = self.config.get("scale_index", DEFAULT_SCALE_INDEX)
+        if self.scale_idx < 0 or self.scale_idx >= len(SCALE_STEPS):
+            self.scale_idx = DEFAULT_SCALE_INDEX
+        self.font_scale = SCALE_STEPS[self.scale_idx]
+
+        # Base dimensions
+        self.base_width = 350
+        self.base_height_compact = 145
+        self.base_height_expanded = 315
         self.is_expanded = False
         self.is_topmost = True
         
         # Screen position (top right corner)
+        w = int(self.base_width * self.font_scale)
+        h = int(self.base_height_compact * self.font_scale)
         screen_w = self.root.winfo_screenwidth()
-        x = max(50, screen_w - self.width - 30)
+        x = max(30, screen_w - w - 30)
         y = 50
-        self.root.geometry(f"{self.width}x{self.height_compact}+{x}+{y}")
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
         self.root.configure(bg=BG_MAIN)
         self.root.overrideredirect(True)  # Frameless
         self.root.attributes("-topmost", True)
@@ -85,39 +99,60 @@ class AntigravityWidget:
         self.history_records = []
 
         self.setup_ui()
+        self.apply_font_scale()
         self.poll_log()
         self.update_timer()
 
+        # Bind Ctrl + Mousewheel on root for instant zoom
+        self.root.bind("<Control-MouseWheel>", self.on_ctrl_wheel)
+
+    def load_config(self):
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {"scale_index": DEFAULT_SCALE_INDEX}
+
+    def save_config(self):
+        try:
+            os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump({"scale_index": self.scale_idx}, f)
+        except Exception:
+            pass
+
     def setup_ui(self):
         # 1. Custom Drag Header
-        self.header = tk.Frame(self.root, bg=BG_HEADER, height=30)
+        self.header = tk.Frame(self.root, bg=BG_HEADER, height=32)
         self.header.pack(fill="x", side="top")
         self.header.pack_propagate(False)
 
         self.header.bind("<ButtonPress-1>", self.start_drag)
         self.header.bind("<B1-Motion>", self.do_drag)
 
-        title_lbl = tk.Label(
+        self.title_lbl = tk.Label(
             self.header,
-            text=" 🤖 Antigravity 调度监控",
+            text=" 🤖 Antigravity 监控",
             font=("Microsoft YaHei", 9, "bold"),
             bg=BG_HEADER,
             fg=TEXT_PRIMARY,
             cursor="fleur"
         )
-        title_lbl.pack(side="left", padx=5, pady=4)
-        title_lbl.bind("<ButtonPress-1>", self.start_drag)
-        title_lbl.bind("<B1-Motion>", self.do_drag)
+        self.title_lbl.pack(side="left", padx=5, pady=3)
+        self.title_lbl.bind("<ButtonPress-1>", self.start_drag)
+        self.title_lbl.bind("<B1-Motion>", self.do_drag)
 
-        # Header action buttons
-        btn_close = tk.Label(
+        # Header action buttons (Right to Left: Close, Pin, Reset, A+, A-)
+        self.btn_close = tk.Label(
             self.header, text="✕", font=("Microsoft YaHei", 9),
             bg=BG_HEADER, fg=TEXT_MUTED, cursor="hand2", padx=6
         )
-        btn_close.pack(side="right")
-        btn_close.bind("<Button-1>", lambda e: self.root.destroy())
-        btn_close.bind("<Enter>", lambda e: btn_close.configure(fg=COLOR_ERR, bg=BG_HOVER))
-        btn_close.bind("<Leave>", lambda e: btn_close.configure(fg=TEXT_MUTED, bg=BG_HEADER))
+        self.btn_close.pack(side="right")
+        self.btn_close.bind("<Button-1>", lambda e: self.root.destroy())
+        self.btn_close.bind("<Enter>", lambda e: self.btn_close.configure(fg=COLOR_ERR, bg=BG_HOVER))
+        self.btn_close.bind("<Leave>", lambda e: self.btn_close.configure(fg=TEXT_MUTED, bg=BG_HEADER))
 
         self.btn_pin = tk.Label(
             self.header, text="📌", font=("Microsoft YaHei", 9),
@@ -126,28 +161,55 @@ class AntigravityWidget:
         self.btn_pin.pack(side="right")
         self.btn_pin.bind("<Button-1>", self.toggle_topmost)
 
+        self.btn_reset = tk.Label(
+            self.header, text="🔄", font=("Microsoft YaHei", 8),
+            bg=BG_HEADER, fg=TEXT_MUTED, cursor="hand2", padx=4
+        )
+        self.btn_reset.pack(side="right")
+        self.btn_reset.bind("<Button-1>", self.reset_state_manually)
+        self.btn_reset.bind("<Enter>", lambda e: self.btn_reset.configure(fg=TEXT_PRIMARY))
+        self.btn_reset.bind("<Leave>", lambda e: self.btn_reset.configure(fg=TEXT_MUTED))
+
+        self.btn_zoom_in = tk.Label(
+            self.header, text="A+", font=("Microsoft YaHei", 8, "bold"),
+            bg=BG_HEADER, fg=TEXT_MUTED, cursor="hand2", padx=4
+        )
+        self.btn_zoom_in.pack(side="right")
+        self.btn_zoom_in.bind("<Button-1>", lambda e: self.change_zoom(1))
+        self.btn_zoom_in.bind("<Enter>", lambda e: self.btn_zoom_in.configure(fg=COLOR_ACCENT))
+        self.btn_zoom_in.bind("<Leave>", lambda e: self.btn_zoom_in.configure(fg=TEXT_MUTED))
+
+        self.btn_zoom_out = tk.Label(
+            self.header, text="A-", font=("Microsoft YaHei", 8, "bold"),
+            bg=BG_HEADER, fg=TEXT_MUTED, cursor="hand2", padx=4
+        )
+        self.btn_zoom_out.pack(side="right")
+        self.btn_zoom_out.bind("<Button-1>", lambda e: self.change_zoom(-1))
+        self.btn_zoom_out.bind("<Enter>", lambda e: self.btn_zoom_out.configure(fg=COLOR_ACCENT))
+        self.btn_zoom_out.bind("<Leave>", lambda e: self.btn_zoom_out.configure(fg=TEXT_MUTED))
+
         # 2. Main Card Body
         self.body = tk.Frame(self.root, bg=BG_MAIN, padx=12, pady=8)
         self.body.pack(fill="x", expand=False)
 
         # Status row (Dot + Status text + Live timer)
-        status_row = tk.Frame(self.body, bg=BG_MAIN)
-        status_row.pack(fill="x")
+        self.status_row = tk.Frame(self.body, bg=BG_MAIN)
+        self.status_row.pack(fill="x")
 
         self.status_dot = tk.Label(
-            status_row, text="●", font=("Segoe UI", 12),
+            self.status_row, text="●", font=("Segoe UI", 12),
             bg=BG_MAIN, fg=COLOR_IDLE
         )
         self.status_dot.pack(side="left")
 
         self.status_text = tk.Label(
-            status_row, text="空闲待命", font=("Microsoft YaHei", 10, "bold"),
+            self.status_row, text="空闲待命", font=("Microsoft YaHei", 10, "bold"),
             bg=BG_MAIN, fg=COLOR_IDLE
         )
         self.status_text.pack(side="left", padx=(4, 8))
 
         self.timer_label = tk.Label(
-            status_row, text="", font=("Consolas", 10, "bold"),
+            self.status_row, text="", font=("Consolas", 10, "bold"),
             bg=BG_MAIN, fg=COLOR_BUSY
         )
         self.timer_label.pack(side="right")
@@ -155,7 +217,7 @@ class AntigravityWidget:
         # Task summary line
         self.task_lbl = tk.Label(
             self.body, text="最近任务: 暂无调用",
-            font=("Microsoft YaHei", 8), bg=BG_MAIN, fg=TEXT_PRIMARY,
+            font=("Microsoft YaHei", 9), bg=BG_MAIN, fg=TEXT_PRIMARY,
             anchor="w", justify="left"
         )
         self.task_lbl.pack(fill="x", pady=(4, 2))
@@ -169,11 +231,11 @@ class AntigravityWidget:
         self.meta_lbl.pack(fill="x")
 
         # Bottom Bar: Expand Details Button
-        bottom_bar = tk.Frame(self.body, bg=BG_MAIN)
-        bottom_bar.pack(fill="x", pady=(6, 0))
+        self.bottom_bar = tk.Frame(self.body, bg=BG_MAIN)
+        self.bottom_bar.pack(fill="x", pady=(6, 0))
 
         self.expand_btn = tk.Label(
-            bottom_bar, text="▼ 查看最近调用历史", font=("Microsoft YaHei", 8),
+            self.bottom_bar, text="▼ 查看最近调用历史", font=("Microsoft YaHei", 8),
             bg=BG_CARD, fg=COLOR_ACCENT, cursor="hand2", padx=6, pady=2
         )
         self.expand_btn.pack(side="left")
@@ -182,11 +244,11 @@ class AntigravityWidget:
         # 3. History Panel (Collapsible)
         self.history_frame = tk.Frame(self.root, bg=BG_HEADER, padx=10, pady=6)
         
-        hist_title = tk.Label(
+        self.hist_title = tk.Label(
             self.history_frame, text="最近 6 次调度明细:",
             font=("Microsoft YaHei", 8, "bold"), bg=BG_HEADER, fg=TEXT_MUTED, anchor="w"
         )
-        hist_title.pack(fill="x")
+        self.hist_title.pack(fill="x")
 
         self.history_box = tk.Text(
             self.history_frame, height=8, bg=BG_HEADER, fg=TEXT_PRIMARY,
@@ -195,6 +257,59 @@ class AntigravityWidget:
         )
         self.history_box.pack(fill="both", expand=True)
         self.history_box.configure(state="disabled")
+
+    def change_zoom(self, delta):
+        new_idx = self.scale_idx + delta
+        if 0 <= new_idx < len(SCALE_STEPS):
+            self.scale_idx = new_idx
+            self.font_scale = SCALE_STEPS[self.scale_idx]
+            self.save_config()
+            self.apply_font_scale()
+
+    def on_ctrl_wheel(self, event):
+        if event.delta > 0:
+            self.change_zoom(1)
+        elif event.delta < 0:
+            self.change_zoom(-1)
+
+    def apply_font_scale(self):
+        s = self.font_scale
+        # Update fonts
+        self.title_lbl.configure(font=("Microsoft YaHei", max(8, int(9 * s)), "bold"))
+        self.btn_close.configure(font=("Microsoft YaHei", max(8, int(9 * s))))
+        self.btn_pin.configure(font=("Microsoft YaHei", max(8, int(9 * s))))
+        self.btn_reset.configure(font=("Microsoft YaHei", max(7, int(8 * s))))
+        self.btn_zoom_in.configure(font=("Microsoft YaHei", max(7, int(8 * s)), "bold"))
+        self.btn_zoom_out.configure(font=("Microsoft YaHei", max(7, int(8 * s)), "bold"))
+
+        self.status_dot.configure(font=("Segoe UI", max(10, int(12 * s))))
+        self.status_text.configure(font=("Microsoft YaHei", max(9, int(10 * s)), "bold"))
+        self.timer_label.configure(font=("Consolas", max(9, int(10 * s)), "bold"))
+
+        self.task_lbl.configure(font=("Microsoft YaHei", max(8, int(9 * s))))
+        self.meta_lbl.configure(font=("Microsoft YaHei", max(7, int(8.5 * s))))
+        self.expand_btn.configure(font=("Microsoft YaHei", max(7, int(8.5 * s))))
+
+        self.hist_title.configure(font=("Microsoft YaHei", max(7, int(8.5 * s)), "bold"))
+        self.history_box.configure(font=("Consolas", max(7, int(8.5 * s))))
+
+        # Resize window
+        cur_x = self.root.winfo_x()
+        cur_y = self.root.winfo_y()
+        w = int(self.base_width * s)
+        h = int((self.base_height_expanded if self.is_expanded else self.base_height_compact) * s)
+        self.header.configure(height=max(28, int(32 * s)))
+        self.root.geometry(f"{w}x{h}+{cur_x}+{cur_y}")
+
+    def reset_state_manually(self, event=None):
+        """手动重置状态卡片为空闲待命"""
+        self.current_state = "IDLE"
+        self.start_timestamp = 0.0
+        self.status_dot.configure(fg=COLOR_IDLE)
+        self.status_text.configure(text="空闲待命 (手动重置)", fg=COLOR_IDLE)
+        self.timer_label.configure(text="")
+        self.task_lbl.configure(text="最近状态: 已手动重置就绪")
+        self.meta_lbl.configure(text="引擎: agentrouter/glm-5.3 | 监听就绪")
 
     def start_drag(self, event):
         self._offset_x = event.x
@@ -212,18 +327,21 @@ class AntigravityWidget:
 
     def toggle_expand(self, event=None):
         self.is_expanded = not self.is_expanded
-        w = self.width
+        s = self.font_scale
+        w = int(self.base_width * s)
         cur_x = self.root.winfo_x()
         cur_y = self.root.winfo_y()
 
         if self.is_expanded:
             self.history_frame.pack(fill="both", expand=True, side="bottom")
-            self.root.geometry(f"{w}x{self.height_expanded}+{cur_x}+{cur_y}")
+            h = int(self.base_height_expanded * s)
+            self.root.geometry(f"{w}x{h}+{cur_x}+{cur_y}")
             self.expand_btn.configure(text="▲ 收起调用历史")
             self.render_history()
         else:
             self.history_frame.pack_forget()
-            self.root.geometry(f"{w}x{self.height_compact}+{cur_x}+{cur_y}")
+            h = int(self.base_height_compact * s)
+            self.root.geometry(f"{w}x{h}+{cur_x}+{cur_y}")
             self.expand_btn.configure(text="▼ 查看最近调用历史")
 
     def render_history(self):
@@ -256,7 +374,6 @@ class AntigravityWidget:
             if not lines:
                 return
 
-            # Keep last history items
             self.history_records = lines[-10:]
             if self.is_expanded:
                 self.render_history()
@@ -269,31 +386,41 @@ class AntigravityWidget:
                 
                 is_async = "[ASYNC" in last_line
                 self.status_text.configure(
-                    text="后台长任务思考中..." if is_async else "正在思考执行...", 
+                    text="后台长任务运行中..." if is_async else "正在思考执行...", 
                     fg=COLOR_BUSY
                 )
                 
-                # Extract task
                 task_part = "任务处理中"
                 if "任务:" in last_line:
                     task_part = last_line.split("任务:")[-1].strip()
                 elif "列表:" in last_line:
                     task_part = "审查文件: " + last_line.split("列表:")[-1].strip()
                 
-                prefix = "[异步] " if is_async else ""
-                if len(task_part) > 26:
-                    task_part = task_part[:26] + "..."
-                self.task_lbl.configure(text=f"{prefix}任务: {task_part}")
+                # Extract task ID if present
+                tid_match = re.search(r"\[ASYNC:([^\]]+)\]", last_line)
+                tid_prefix = f"[{tid_match.group(1)[-8:]}] " if tid_match else ("[异步] " if is_async else "")
+                
+                if len(task_part) > 28:
+                    task_part = task_part[:28] + "..."
+                self.task_lbl.configure(text=f"{tid_prefix}{task_part}")
 
-                # Extract model
                 engine_part = "GLM-5.3"
                 if "引擎:" in last_line:
                     engine_part = last_line.split("引擎:")[1].split("|")[0].strip()
-                self.meta_lbl.configure(text=f"引擎: {engine_part} | 协同运行中...")
+                self.meta_lbl.configure(text=f"引擎: {engine_part} | 后台持续运行中...")
 
-                # Timer start
-                if self.start_timestamp == 0.0:
-                    self.start_timestamp = time.time()
+                # Extract start time from log timestamp if available
+                time_match = re.search(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]", last_line)
+                if time_match:
+                    try:
+                        log_dt = datetime.strptime(time_match.group(1), "%Y-%m-%d %H:%M:%S")
+                        self.start_timestamp = log_dt.timestamp()
+                    except Exception:
+                        if self.start_timestamp == 0.0:
+                            self.start_timestamp = time.time()
+                else:
+                    if self.start_timestamp == 0.0:
+                        self.start_timestamp = time.time()
 
             elif "[DONE]" in last_line:
                 self.current_state = "IDLE"
@@ -301,12 +428,10 @@ class AntigravityWidget:
                 self.status_dot.configure(fg=COLOR_IDLE)
                 self.status_text.configure(text="空闲待命 (最近成功)", fg=COLOR_IDLE)
                 
-                # Extract duration
                 dur_match = re.search(r"耗时:\s*([0-9.]+s)", last_line)
                 dur = dur_match.group(1) if dur_match else ""
                 self.timer_label.configure(text=f"耗时: {dur}" if dur else "")
 
-                # Extract report or characters
                 if "报告:" in last_line:
                     rep_name = last_line.split("报告:")[-1].strip()
                     self.meta_lbl.configure(text=f"报告已生成: {rep_name}")
@@ -323,7 +448,7 @@ class AntigravityWidget:
                 err_match = re.search(r"异常:\s*(.*)", last_line)
                 err_txt = err_match.group(1)[:30] if err_match else "发生错误"
                 self.task_lbl.configure(text=f"报错: {err_txt}")
-                self.meta_lbl.configure(text="请查看历史日志了解异常详情")
+                self.meta_lbl.configure(text="请点击下方展开历史查看详情")
 
         except Exception:
             pass
