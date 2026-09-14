@@ -23,7 +23,8 @@ import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from mcp.server.fastmcp import FastMCP
-from google.antigravity import Agent, LocalOpenAIAgentConfig, CapabilitiesConfig
+from google.antigravity import Agent, LocalAgentConfig, LocalOpenAIAgentConfig, CapabilitiesConfig
+from google.antigravity.hooks import policy
 
 # Initialize FastMCP server
 mcp = FastMCP(
@@ -36,10 +37,19 @@ LOG_FILE = os.environ.get(
     "ANTIGRAVITY_LOG_FILE",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "antigravity.log")
 )
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyCiSYMrpvtCsDWXB16XF4BE3IUGb6by-wg")
 BASE_URL = os.environ.get("ANTIGRAVITY_BASE_URL", "http://127.0.0.1:10100/v1")
 DEFAULT_MODEL = os.environ.get("ANTIGRAVITY_MODEL", "agentrouter/glm-5.3")
 TASKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tasks")
 os.makedirs(TASKS_DIR, exist_ok=True)
+
+
+def get_engine_name() -> str:
+    """返回当前底层运行的推理引擎名称"""
+    key = os.environ.get("GEMINI_API_KEY", GEMINI_API_KEY)
+    if key and key.strip():
+        return "Google Gemini (Antigravity 原生)"
+    return DEFAULT_MODEL
 
 # Safe auto-detach timeout: 180s (Codex client times out at 300s, giving 120s buffer)
 SAFE_SYNC_TIMEOUT = float(os.environ.get("ANTIGRAVITY_SYNC_TIMEOUT", "180.0"))
@@ -132,20 +142,36 @@ async def _execute_antigravity_core(
     )
 
     workspaces = [ws] if os.path.exists(ws) else None
+    api_key = os.environ.get("GEMINI_API_KEY", GEMINI_API_KEY).strip()
 
-    config = LocalOpenAIAgentConfig(
-        base_url=BASE_URL,
-        model=DEFAULT_MODEL,
-        system_instructions=sys_inst,
-        capabilities=CapabilitiesConfig(
-            file_reads=True,
-            file_writes=True,
-            command_execution=True,
-            subagents=True,
-            mcp=True,
-        ),
-        workspaces=workspaces,
-    )
+    if api_key:
+        config = LocalAgentConfig(
+            api_key=api_key,
+            system_instructions=sys_inst,
+            capabilities=CapabilitiesConfig(
+                file_reads=True,
+                file_writes=True,
+                command_execution=True,
+                subagents=True,
+                mcp=True,
+            ),
+            policies=[policy.allow_all()],
+            workspaces=workspaces,
+        )
+    else:
+        config = LocalOpenAIAgentConfig(
+            base_url=BASE_URL,
+            model=DEFAULT_MODEL,
+            system_instructions=sys_inst,
+            capabilities=CapabilitiesConfig(
+                file_reads=True,
+                file_writes=True,
+                command_execution=True,
+                subagents=True,
+                mcp=True,
+            ),
+            workspaces=workspaces,
+        )
 
     last_err = None
     for attempt in range(1, MAX_NETWORK_RETRIES + 1):
@@ -202,7 +228,8 @@ async def _run_async_worker(
     if len(prompt_summary) > 50:
         prompt_summary = prompt_summary[:50] + "..."
 
-    log_event(f"[START] [ASYNC:{task_id}] 触发任务: {task_type} | 引擎: {DEFAULT_MODEL} | 工作区: {ws} | 任务: {prompt_summary}")
+    engine_name = get_engine_name()
+    log_event(f"[START] [ASYNC:{task_id}] 触发任务: {task_type} | 引擎: {engine_name} | 工作区: {ws} | 任务: {prompt_summary}")
 
     try:
         result_text = await _execute_antigravity_core(prompt, ws, system_instructions, task_id=task_id)
@@ -217,7 +244,7 @@ async def _run_async_worker(
             f"- **执行耗时**: {elapsed:.2f} 秒 (约 {elapsed/60:.1f} 分钟)\n"
             f"- **完成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"- **工作区**: `{ws}`\n"
-            f"- **模型引擎**: `{DEFAULT_MODEL}`\n\n"
+            f"- **模型引擎**: `{engine_name}`\n\n"
             f"---\n\n"
             f"## 📋 任务描述\n\n"
             f"{prompt}\n\n"
