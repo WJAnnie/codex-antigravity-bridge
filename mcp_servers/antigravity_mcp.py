@@ -53,6 +53,8 @@ os.makedirs(TASKS_DIR, exist_ok=True)
 
 # Gemini 3.8 配额耗尽冷却时间戳（避免配额用完后每个任务都反复碰壁 8 秒）
 _gemini_38_cooling_until: float = 0.0
+# Gemini 2.5 配额耗尽冷却时间戳
+_gemini_25_cooling_until: float = 0.0
 # Google Gemini 区域不支持 (code 400: User location is not supported) 冷却时间戳
 _gemini_location_cooling_until: float = 0.0
 # gpt-5.6-sol 预算池用尽 (402 Budget pool quota exhausted) 冷却时间戳（直到下一个 0:00/8:00/16:00 放量批次）
@@ -350,20 +352,24 @@ async def _execute_antigravity_core(
                 _save_task_record(rec)
 
     # =========================================================================
-    # Tier 3 (终极保底): gemini-2.5-flash (Google 原生 1500次/天高配额基准模型)
+    # Tier 3 (终极保底): gemini-2.5-flash (Google 原生高配额基准模型)
     # =========================================================================
-    if api_key and (time.time() >= _gemini_location_cooling_until):
-        log_event(f"[TIER3]{tid_prefix} 启动 Tier 3: {TIER3_MODEL} (Google 原生 1500次/天高配额基准) 终极保障执行...")
+    if api_key and (time.time() >= _gemini_location_cooling_until) and (time.time() >= _gemini_25_cooling_until):
+        log_event(f"[TIER3]{tid_prefix} 启动 Tier 3: {TIER3_MODEL} (Google 原生高配额基准) 终极保障执行...")
         try:
             return await _try_agent_loop(_build_gemini_cfg(TIER3_MODEL), is_gemini=True, tier_name=f"Tier 3 ({TIER3_MODEL})")
         except Exception as e_t3:
             short_t3 = str(e_t3).replace("\n", " ").strip()[:120]
-            if "user location is not supported" in short_t3.lower() or "location" in short_t3.lower():
+            if "429" in short_t3 or "quota" in short_t3.lower():
+                _gemini_25_cooling_until = time.time() + 1800  # 自动进入 30 分钟配额冷却期
+                log_event(f"[FALLBACK]{tid_prefix} Tier 3 ({TIER3_MODEL}) 配额耗尽 (429)，冷却 30 分钟...")
+            elif "user location is not supported" in short_t3.lower() or "location" in short_t3.lower():
                 _gemini_location_cooling_until = time.time() + 3600
                 log_event(f"[LOCATION]{tid_prefix} Tier 3 检测到 IP 区域不支持 ({short_t3})，冷却 1 小时...")
             raise RuntimeError(f"全链路推理梯队均不可用。中继异常: {relay_errors[-1] if relay_errors else 'None'}, 原生异常: {e_t3}")
     else:
-        raise RuntimeError(f"全链路推理梯队均不可用。本地中继异常列表: {relay_errors}")
+        reason = "区域不支持" if time.time() < _gemini_location_cooling_until else "配额冷却中"
+        raise RuntimeError(f"全链路推理梯队均不可用。本地中继异常列表: {relay_errors}，Tier 3 Google 原生处于{reason}跳过。")
 
 
 def _try_rescue_brain_artifact(start_time: float, target_report_file: str, ws: str, task_id: str) -> Optional[str]:
