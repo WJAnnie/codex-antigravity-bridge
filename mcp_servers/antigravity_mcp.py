@@ -4,14 +4,14 @@ Allows AI assistants (like OpenAI Codex) to delegate complex coding, refactoring
 and code review tasks to Google Antigravity.
 
 Features:
-- Synchronous tools (ask_antigravity, antigravity_code_review) for short queries (<300s).
-- Asynchronous tools (ask_antigravity_async, antigravity_code_review_async) for long-running
-  exploration, multi-file refactoring, and extensive reviews (10~60+ mins), completely 
-  bypassing the client 300s timeout constraint.
-- Task status inquiry (check_antigravity_task, list_antigravity_tasks) with auto-generated
-  markdown reports saved directly in the project workspace.
-- Configured with LocalOpenAIAgentConfig to bridge seamlessly to local model gateway (http://127.0.0.1:10100/v1).
-- Keyless, reliable execution using local agentrouter/glm-5.3.
+- Auto-Detaching Hybrid Engine: Prevents client 300s timeout by design!
+  - Quick tasks (< 180s) return complete results synchronously.
+  - Large reviews (3+ files) immediately detach to background in 0.1s.
+  - Long tasks (> 180s) automatically detach safely at 180s, continuing in background without interruption.
+- Asynchronous task tools (`ask_antigravity_async`, `antigravity_code_review_async`).
+- Real-time progress query (`check_antigravity_task` with optional `wait_seconds`).
+- Persistent markdown reports automatically written to `<workspace>/.antigravity_reports/`.
+- LocalOpenAIAgentConfig with local agentrouter/glm-5.3 for zero-key, high-stability multi-turn tool reasoning.
 """
 
 import sys
@@ -40,6 +40,9 @@ BASE_URL = os.environ.get("ANTIGRAVITY_BASE_URL", "http://127.0.0.1:10100/v1")
 DEFAULT_MODEL = os.environ.get("ANTIGRAVITY_MODEL", "agentrouter/glm-5.3")
 TASKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tasks")
 os.makedirs(TASKS_DIR, exist_ok=True)
+
+# Safe auto-detach timeout: 180s (Codex client times out at 300s, giving 120s buffer)
+SAFE_SYNC_TIMEOUT = float(os.environ.get("ANTIGRAVITY_SYNC_TIMEOUT", "180.0"))
 
 # In-memory background tasks tracker
 _background_tasks: Dict[str, asyncio.Task] = {}
@@ -125,7 +128,7 @@ async def _run_async_worker(
     report_file: str,
     system_instructions: Optional[str] = None
 ) -> None:
-    """后台异步任务 Worker"""
+    """后台异步任务 Worker（永不被客户端超时打断）"""
     start_time = time.time()
     record = _load_task_record(task_id) or {}
     record["status"] = "RUNNING"
@@ -136,7 +139,7 @@ async def _run_async_worker(
     if len(prompt_summary) > 50:
         prompt_summary = prompt_summary[:50] + "..."
 
-    log_event(f"[START] [ASYNC:{task_id}] 触发后台任务: {task_type} | 引擎: {DEFAULT_MODEL} | 工作区: {ws} | 任务: {prompt_summary}")
+    log_event(f"[START] [ASYNC:{task_id}] 触发任务: {task_type} | 引擎: {DEFAULT_MODEL} | 工作区: {ws} | 任务: {prompt_summary}")
 
     try:
         result_text = await _execute_antigravity_core(prompt, ws, system_instructions)
@@ -167,7 +170,7 @@ async def _run_async_worker(
         record["elapsed_sec"] = elapsed
         record["return_chars"] = len(result_text)
         record["report_file"] = report_file
-        record["snippet"] = result_text[:400] + ("..." if len(result_text) > 400 else "")
+        record["snippet"] = result_text[:500] + ("..." if len(result_text) > 500 else "")
         _save_task_record(record)
 
         log_event(f"[DONE]  [ASYNC:{task_id}] 执行成功 | 耗时: {elapsed:.2f}s | 字符数: {len(result_text)} | 报告: {os.path.basename(report_file)}")
@@ -183,7 +186,8 @@ async def _run_async_worker(
 
 
 # ---------------------------------------------------------------------------
-# 同步工具 (适用于短任务 < 3 分钟)
+# 智能自愈混合工具 (Auto-Detaching Hybrid Tools)
+# 用户与 Codex 无需声明“异步”，系统自动检测防超时！
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
@@ -193,125 +197,21 @@ async def ask_antigravity(
     system_instructions: Optional[str] = None,
 ) -> str:
     """
-    Delegate a fast coding, refactoring, or research task to Google Antigravity Agent (Synchronous).
-    NOTE: If the task is large, involves 3+ files, or is expected to take over 3 minutes,
-    please use `ask_antigravity_async` instead to avoid Codex client 300s timeout.
+    Delegate a coding, refactoring, or research task to Google Antigravity Agent.
+    AUTOMATIC TIMEOUT DEFENSE:
+    - If the task finishes within 180s, returns full results directly.
+    - If the task takes longer than 180s, it AUTOMATICALLY detaches to background execution,
+      completely preventing the Codex client 300s timeout!
 
     :param prompt: The specific task, questions, or instructions for Antigravity.
     :param workspace_path: Root directory of the workspace to operate on.
     :param system_instructions: Optional custom persona or system guidance for Antigravity.
-    :return: The full response and findings from Antigravity.
-    """
-    start_time = time.time()
-    ws = workspace_path or os.environ.get("ANTIGRAVITY_WORKSPACE", os.getcwd())
-    
-    prompt_summary = prompt.replace("\n", " ").strip()
-    if len(prompt_summary) > 60:
-        prompt_summary = prompt_summary[:60] + "..."
-
-    log_event(f"[START] 触发工具: ask_antigravity | 引擎: {DEFAULT_MODEL} | 工作区: {ws} | 任务: {prompt_summary}")
-
-    try:
-        result_text = await _execute_antigravity_core(prompt, ws, system_instructions)
-        elapsed = time.time() - start_time
-        log_event(f"[DONE]  执行成功 | 引擎: {DEFAULT_MODEL} | 耗时: {elapsed:.2f}s | 返回字符数: {len(result_text)}")
-
-        header = (
-            f"> 🤖 **【Google Antigravity 专家子智能体执行汇报】**\n"
-            f"> ⏱️ **执行耗时**: {elapsed:.2f}s | 📁 **工作区**: `{ws}` | 🧠 **引擎**: `{DEFAULT_MODEL}`\n\n"
-        )
-        return header + result_text
-
-    except Exception as e:
-        elapsed = time.time() - start_time
-        error_msg = f"[Antigravity Error] 调用执行失败: {str(e)}"
-        log_event(f"[ERROR] 执行失败 | 引擎: {DEFAULT_MODEL} | 耗时: {elapsed:.2f}s | 异常: {str(e)}")
-        return error_msg
-
-
-@mcp.tool()
-async def antigravity_code_review(
-    files: List[str],
-    instructions: str = "审查代码安全性、异常处理、性能瓶颈与架构合理性，并给出具体的重构建议。",
-    workspace_path: Optional[str] = None,
-) -> str:
-    """
-    Request a quick multi-perspective code review from Google Antigravity for small sets of files (Synchronous).
-    NOTE: If reviewing more than 3 files or complex architectures, use `antigravity_code_review_async`
-    to avoid the client 300s timeout.
-
-    :param files: List of relative or absolute file paths to be reviewed.
-    :param instructions: Specific focus areas or guidelines for the review.
-    :param workspace_path: Workspace directory path.
-    :return: Detailed code review report with findings and suggested diffs/improvements.
-    """
-    start_time = time.time()
-    ws = workspace_path or os.environ.get("ANTIGRAVITY_WORKSPACE", os.getcwd())
-    
-    log_event(f"[START] 触发工具: antigravity_code_review | 引擎: {DEFAULT_MODEL} | 文件数: {len(files)} | 列表: {', '.join(files[:3])}{'...' if len(files) > 3 else ''}")
-
-    file_list_str = "\n".join(f"- {f}" for f in files)
-    prompt = (
-        f"请对以下文件进行深度代码审查：\n"
-        f"{file_list_str}\n\n"
-        f"审查重点与要求：\n"
-        f"{instructions}\n\n"
-        f"请按照问题严重等级（严重/中等/建议）结构化输出审查报告，并提供具体的代码改进建议。"
-    )
-
-    sys_inst = (
-        f"你是由 OpenAI Codex 调用的 Google Antigravity 首席代码审查专家。\n"
-        f"当前工作区路径为：{ws}。\n"
-        f"请对用户指定的代码进行深入的质量与安全审计，并提供具体的重构与优化方案。"
-    )
-
-    try:
-        result_text = await _execute_antigravity_core(prompt, ws, sys_inst)
-        elapsed = time.time() - start_time
-        log_event(f"[DONE]  审查成功 | 引擎: {DEFAULT_MODEL} | 耗时: {elapsed:.2f}s | 返回字符数: {len(result_text)}")
-
-        header = (
-            f"> 🔍 **【Google Antigravity 深度代码审查报告】**\n"
-            f"> ⏱️ **审查耗时**: {elapsed:.2f}s | 📄 **审查文件数**: {len(files)} 个 | 🧠 **引擎**: `{DEFAULT_MODEL}`\n\n"
-        )
-        return header + result_text
-
-    except Exception as e:
-        elapsed = time.time() - start_time
-        error_msg = f"[Antigravity Error] 代码审查执行失败: {str(e)}"
-        log_event(f"[ERROR] 审查失败 | 引擎: {DEFAULT_MODEL} | 耗时: {elapsed:.2f}s | 异常: {str(e)}")
-        return error_msg
-
-
-# ---------------------------------------------------------------------------
-# 异步长任务工具 (突破 300s 限制，支持 10~60+ 分钟长任务)
-# ---------------------------------------------------------------------------
-
-@mcp.tool()
-async def ask_antigravity_async(
-    prompt: str,
-    workspace_path: Optional[str] = None,
-    report_file: Optional[str] = None,
-    system_instructions: Optional[str] = None,
-) -> str:
-    """
-    Launch a long-running coding, exploration, or refactoring task in the background (Asynchronous).
-    Returns immediately (< 0.5s) with a task ID, completely immune to Codex 300s timeout!
-    Antigravity will run autonomously in the background and write a comprehensive markdown report.
-
-    :param prompt: Detailed instructions for the task.
-    :param workspace_path: Root directory of the workspace.
-    :param report_file: Path to save the final markdown report. Defaults to `<workspace>/.antigravity_reports/<task_id>.md`.
-    :param system_instructions: Optional custom persona or system guidance.
-    :return: Immediate confirmation with task_id and tracking instructions.
+    :return: Full findings if quick, or auto-detached background tracking info if long.
     """
     ws = workspace_path or os.environ.get("ANTIGRAVITY_WORKSPACE", os.getcwd())
     task_id = f"ag-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
-    
-    if not report_file:
-        report_file = os.path.join(ws, ".antigravity_reports", f"{task_id}.md")
+    report_file = os.path.join(ws, ".antigravity_reports", f"{task_id}.md")
 
-    # Record initial task state
     record = {
         "task_id": task_id,
         "task_type": "ask_antigravity",
@@ -324,7 +224,182 @@ async def ask_antigravity_async(
     }
     _save_task_record(record)
 
-    # Spawn background task
+    # Launch background worker
+    bg_task = asyncio.create_task(
+        _run_async_worker(task_id, "ask_antigravity", prompt, ws, report_file, system_instructions)
+    )
+    _background_tasks[task_id] = bg_task
+
+    # Hybrid Wait: wait up to SAFE_SYNC_TIMEOUT (180s)
+    try:
+        await asyncio.wait_for(asyncio.shield(bg_task), timeout=SAFE_SYNC_TIMEOUT)
+        
+        # Finished within safe timeout!
+        rec = _load_task_record(task_id) or {}
+        if rec.get("status") == "COMPLETED":
+            elapsed = rec.get("elapsed_sec", 0.0)
+            try:
+                with open(report_file, "r", encoding="utf-8") as rf:
+                    content = rf.read()
+                return content
+            except Exception:
+                return (
+                    f"> 🤖 **【Google Antigravity 专家子智能体执行汇报】**\n"
+                    f"> ⏱️ **执行耗时**: {elapsed:.2f}s | 📁 **工作区**: `{ws}` | 🧠 **引擎**: `{DEFAULT_MODEL}`\n\n"
+                    f"报告已保存至: `{report_file}`"
+                )
+        else:
+            return f"[Antigravity Error] 调用执行失败: {rec.get('error', '未知异常')}"
+
+    except asyncio.TimeoutError:
+        # Safe auto-detach! Task continues in background, Codex gets clean response!
+        log_event(f"[AUTO-DETACH] [ag:{task_id}] 运行已达 {SAFE_SYNC_TIMEOUT:.0f}s，已平滑转入后台运行，成功拦截 300s 超时")
+        return (
+            f"> ⏳ **【任务执行规模较大，已在第 {SAFE_SYNC_TIMEOUT:.0f} 秒自动转入安全后台托管】**\n"
+            f"> 🛡️ **已成功拦截并彻底规避网关 300 秒超时中断！** 任务正在后台全力生成中，绝未失败。\n\n"
+            f"- **任务 ID**: `{task_id}`\n"
+            f"- **工作区**: `{ws}`\n"
+            f"- **报告生成路径**: `{report_file}`\n"
+            f"- **当前状态**: Antigravity 智能体正在后台持续思考与写入，桌面悬浮监控窗正持续计时。\n\n"
+            f"💡 **后续调度指引**：\n"
+            f"1. 任务仍在正常进行中，请向用户汇报任务已转入后台。\n"
+            f"2. 你可以随时调用 `check_antigravity_task(task_id=\"{task_id}\")` 检查进度。\n"
+            f"3. 待监控窗提示完成后，可直接读取 `{report_file}` 获取完整的分析与代码建议。"
+        )
+
+
+@mcp.tool()
+async def antigravity_code_review(
+    files: List[str],
+    instructions: str = "审查代码安全性、异常处理、性能瓶颈与架构合理性，并给出具体的重构建议。",
+    workspace_path: Optional[str] = None,
+) -> str:
+    """
+    Request a multi-perspective code review from Google Antigravity.
+    AUTOMATIC TIMEOUT DEFENSE:
+    - If reviewing >= 3 files: IMMEDIATELY detaches to background (<0.1s) to prevent any blocking.
+    - If reviewing 1-2 files: waits up to 180s; if exceeded, automatically detaches to background.
+    - You NEVER have to explicitly ask for async mode!
+
+    :param files: List of relative or absolute file paths to be reviewed.
+    :param instructions: Specific focus areas or guidelines for the review.
+    :param workspace_path: Workspace directory path.
+    :return: Direct review report if small, or background tracking info if large.
+    """
+    ws = workspace_path or os.environ.get("ANTIGRAVITY_WORKSPACE", os.getcwd())
+    task_id = f"cr-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
+    report_file = os.path.join(ws, ".antigravity_reports", f"{task_id}.md")
+
+    file_list_str = "\n".join(f"- {f}" for f in files)
+    prompt = (
+        f"请对以下文件进行深度代码审查：\n"
+        f"{file_list_str}\n\n"
+        f"审查重点与要求：\n"
+        f"{instructions}\n\n"
+        f"请按照问题严重等级（严重/中等/建议）结构化输出审查报告，并提供具体的代码改进建议与重构方案。"
+    )
+
+    sys_inst = (
+        f"你是由 OpenAI Codex 调用的 Google Antigravity 首席代码审查专家。\n"
+        f"当前工作区路径为：{ws}。\n"
+        f"请对用户指定的代码进行深入的质量与安全审计，并提供具体的重构与优化方案。"
+    )
+
+    record = {
+        "task_id": task_id,
+        "task_type": "antigravity_code_review",
+        "status": "PENDING",
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "workspace_path": ws,
+        "report_file": report_file,
+        "files": files,
+        "prompt": prompt,
+        "prompt_summary": f"审查 {len(files)} 个文件",
+    }
+    _save_task_record(record)
+
+    bg_task = asyncio.create_task(
+        _run_async_worker(task_id, "antigravity_code_review", prompt, ws, report_file, sys_inst)
+    )
+    _background_tasks[task_id] = bg_task
+
+    # 智能早退分流：如果文件数 >= 3 个，深度审查必然超过 5 分钟，0.1 秒直接返回后台任务凭据！
+    if len(files) >= 3:
+        log_event(f"[EARLY-DETACH] [cr:{task_id}] 审查文件数 ({len(files)} >= 3)，直接启动后台托管模式")
+        return (
+            f"> 🔍 **【已自动启用后台代码审查托管模式】**\n"
+            f"> ⚡ 检测到本次审查文件较多（{len(files)} 个），为彻底避免 300 秒网关超时中断，系统已自动在后台并行执行！\n\n"
+            f"- **任务 ID**: `{task_id}`\n"
+            f"- **审查文件数**: {len(files)} 个文件（{', '.join(files[:3])}{' 等...' if len(files) > 3 else ''}）\n"
+            f"- **报告生成路径**: `{report_file}`\n\n"
+            f"💡 **给主控 Agent 的建议**：\n"
+            f"任务正在后台深度分析中，桌面悬浮监控窗已启动计时。可随时通过 `check_antigravity_task(task_id=\"{task_id}\")` 查询进度。"
+        )
+
+    # 对于 1~2 个文件，先尝试同步等待 180s
+    try:
+        await asyncio.wait_for(asyncio.shield(bg_task), timeout=SAFE_SYNC_TIMEOUT)
+        rec = _load_task_record(task_id) or {}
+        if rec.get("status") == "COMPLETED":
+            try:
+                with open(report_file, "r", encoding="utf-8") as rf:
+                    return rf.read()
+            except Exception:
+                return f"审查成功。完整报告已写入: `{report_file}`"
+        else:
+            return f"[Antigravity Error] 代码审查失败: {rec.get('error', '未知异常')}"
+
+    except asyncio.TimeoutError:
+        log_event(f"[AUTO-DETACH] [cr:{task_id}] 审查运行已达 {SAFE_SYNC_TIMEOUT:.0f}s，已平滑转入后台运行")
+        return (
+            f"> ⏳ **【代码审查规模较大，已在第 {SAFE_SYNC_TIMEOUT:.0f} 秒自动转入安全后台托管】**\n"
+            f"> 🛡️ **已成功拦截并彻底规避网关 300 秒超时中断！** 任务正在后台全力生成中。\n\n"
+            f"- **任务 ID**: `{task_id}`\n"
+            f"- **报告生成路径**: `{report_file}`\n"
+            f"- **当前状态**: Antigravity 正在后台深入审计，桌面悬浮监控窗正持续计时。\n\n"
+            f"💡 任务正常进行中，稍后可通过 `check_antigravity_task(task_id=\"{task_id}\")` 查询进度或直接读取报告文件。"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 显式异步长任务工具 (继续保留以支持精准语义调用)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def ask_antigravity_async(
+    prompt: str,
+    workspace_path: Optional[str] = None,
+    report_file: Optional[str] = None,
+    system_instructions: Optional[str] = None,
+) -> str:
+    """
+    Explicitly launch a long-running coding, exploration, or refactoring task in the background.
+    Returns immediately (< 0.1s) with a task ID.
+
+    :param prompt: Detailed instructions for the task.
+    :param workspace_path: Root directory of the workspace.
+    :param report_file: Path to save final report. Defaults to `<workspace>/.antigravity_reports/<task_id>.md`.
+    :param system_instructions: Optional custom persona or system guidance.
+    :return: Immediate confirmation with task_id and tracking instructions.
+    """
+    ws = workspace_path or os.environ.get("ANTIGRAVITY_WORKSPACE", os.getcwd())
+    task_id = f"ag-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
+    
+    if not report_file:
+        report_file = os.path.join(ws, ".antigravity_reports", f"{task_id}.md")
+
+    record = {
+        "task_id": task_id,
+        "task_type": "ask_antigravity",
+        "status": "PENDING",
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "workspace_path": ws,
+        "report_file": report_file,
+        "prompt": prompt,
+        "prompt_summary": prompt.replace("\n", " ").strip()[:80],
+    }
+    _save_task_record(record)
+
     bg_task = asyncio.create_task(
         _run_async_worker(task_id, "ask_antigravity", prompt, ws, report_file, system_instructions)
     )
@@ -336,9 +411,7 @@ async def ask_antigravity_async(
         f"- **工作区**: `{ws}`\n"
         f"- **报告生成路径**: `{report_file}`\n"
         f"- **不受 300s 超时限制**: 任务正在后台全速运转，桌面悬浮监控窗已启动秒表。\n\n"
-        f"💡 **后续操作指南**：\n"
-        f"1. 你可以随时调用 `check_antigravity_task(task_id=\"{task_id}\")` 查看当前进度与耗时。\n"
-        f"2. 任务完成后，可直接查看或读取 `{report_file}` 获取完整的执行结论与代码建议。"
+        f"💡 可随时通过 `check_antigravity_task(task_id=\"{task_id}\")` 获取当前进度与耗时。"
     )
 
 
@@ -350,8 +423,8 @@ async def antigravity_code_review_async(
     report_file: Optional[str] = None,
 ) -> str:
     """
-    Launch a comprehensive multi-file code review in the background (Asynchronous).
-    Returns immediately (< 0.5s) with a task ID. Ideal for reviewing 5~30+ files or entire architectures.
+    Explicitly launch a multi-file code review in the background.
+    Returns immediately (< 0.1s) with a task ID.
 
     :param files: List of file paths to review.
     :param instructions: Review guidelines and focus areas.
@@ -408,14 +481,26 @@ async def antigravity_code_review_async(
     )
 
 
+# ---------------------------------------------------------------------------
+# 任务状态查询与报告工具
+# ---------------------------------------------------------------------------
+
 @mcp.tool()
-async def check_antigravity_task(task_id: str) -> str:
+async def check_antigravity_task(task_id: str, wait_seconds: int = 0) -> str:
     """
     Check the current status, progress, and results of a background Antigravity task.
 
-    :param task_id: The unique task ID returned by `ask_antigravity_async` or `antigravity_code_review_async`.
-    :return: Current status, elapsed time, and report file location if finished.
+    :param task_id: The unique task ID returned by any Antigravity tool.
+    :param wait_seconds: Optional. Wait up to this many seconds for completion if still running. Defaults to 0.
+    :return: Current status, elapsed time, and report content/location if finished.
     """
+    # If wait_seconds requested and task is currently running in this process
+    if wait_seconds > 0 and task_id in _background_tasks and not _background_tasks[task_id].done():
+        try:
+            await asyncio.wait_for(asyncio.shield(_background_tasks[task_id]), timeout=float(wait_seconds))
+        except asyncio.TimeoutError:
+            pass
+
     record = _load_task_record(task_id)
     if not record:
         return f"❌ 未找到任务 ID 为 `{task_id}` 的记录。请核实 ID 是否正确。"
@@ -425,7 +510,7 @@ async def check_antigravity_task(task_id: str) -> str:
     report_file = record.get("report_file", "")
     summary = record.get("prompt_summary", "")
 
-    if status == "RUNNING" or status == "PENDING":
+    if status in ("RUNNING", "PENDING"):
         start_time = record.get("start_time", time.time())
         running_sec = time.time() - start_time
         return (
@@ -482,7 +567,6 @@ async def list_antigravity_tasks(limit: int = 5) -> str:
     if not files:
         return "暂无后台任务记录。"
 
-    # Sort by mtime desc
     files.sort(key=os.path.getmtime, reverse=True)
     recent_files = files[:limit]
 

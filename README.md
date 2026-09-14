@@ -5,70 +5,68 @@
   <img src="https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg" alt="Python" />
   <img src="https://img.shields.io/badge/Protocol-FastMCP-orange.svg" alt="MCP" />
   <img src="https://img.shields.io/badge/Platform-Windows-lightgrey.svg" alt="Platform" />
-  <img src="https://img.shields.io/badge/Async%20Mode-Supported-blueviolet.svg" alt="Async" />
-  <img src="https://img.shields.io/badge/Status-Production%20Ready-success.svg" alt="Status" />
+  <img src="https://img.shields.io/badge/Anti--Timeout-Auto--Detaching-success.svg" alt="Anti-Timeout" />
 </p>
 
-> **让 OpenAI Codex 无缝调用 Google Antigravity 高级多智能体进行深度代码探索与代码审查，支持“同步即时调用”与“异步长任务（突破 300s 超时限制）”双模式，配备原生桌面悬浮监控小组件。**
+> **让 OpenAI Codex 零感知、无缝调度 Google Antigravity 高级多智能体进行深度代码探索与代码审查。内置“全自动防超时自愈引擎”，彻底终结客户端 300 秒（5分钟）网关超时中断，配备原生桌面悬浮监控小组件。**
 
 ---
 
-## 💡 项目背景与解决的痛点
+## 💡 为什么需要本工具？解决的核心痛点
 
-在实际落地 OpenAI Codex 与 Google Antigravity 协同开发时，开发者通常会遭遇三大棘手问题：
-1. **Google Gemini 云端 API 受限**：缺少商业 Key 或受地理策略网络限制。
-2. **Thinking 模式的 `reasoning_content` 400 校验异常**：部分模型网关在多轮工具链中未回传思维链，导致 API 直接报错中断。
-3. **💥 Codex 客户端 300 秒硬性超时限制（`timed out awaiting tools/call after 300s`）**：
-   - 当 Antigravity 自主对几十个代码文件进行深度探索、多步重构时，耗时往往需要 10~30+ 分钟。
-   - Codex 客户端对任意单次 MCP 工具调用设有 300 秒（5 分钟）硬性截止时间，超时即单方面掐断连接！
-
-**Codex Antigravity Bridge v2.0** 全面攻克上述难题：
-- ⚡ **双模式工具体系**：
-  - **同步模式**：小任务、单文件审查秒级即时回复。
-  - **异步长任务模式**：大重构、全库审查 **< 0.5s 立即返回任务 ID**，Antigravity 后台自主运行，结果自动生成持久化 Markdown 报告，完全突破 300s 限制！
-- 🛡️ **免 Key 本地模型网关（LocalOpenAIAgentConfig）**：默认固化高稳定性 `agentrouter/glm-5.3`，实测 40+ 步复杂任务 100% 成功。
-- 🖥️ **暗黑悬浮监控小组件**：原生 Tkinter 无边框置顶卡片，支持秒表走字、三色状态指示、历史折叠审计与异步长任务联动。
+在用 OpenAI Codex / Claude / Cursor 协同研发大型项目时，开发者面临的最痛苦问题是：
+1. **💥 300 秒硬性超时拦截（`timed out awaiting tools/call after 300s`）**：
+   - 当 Antigravity 在背后深入审计 10+ 个文件或执行复杂重构时，往往需要 10~30+ 分钟。
+   - Codex 客户端对任意单次 MCP 工具调用设有 300 秒硬性超时限制，一旦超时直接报错断开，用户往往等待了 5 分钟却一无所获！
+2. **每次都要反复提醒 Agent“用异步”**：
+   - 主控 Agent 经常遗忘提示词规则，惯性调用同步工具，导致开发者疲于奔命地在 prompt 里强调“请用异步模式”。
+3. **调用过程黑盒无感**：
+   - 委派后台运行长任务时，界面静止，无法感知子任务当前耗时与健康状态。
 
 ---
 
-## 🏗️ 异步长任务架构图
+## 🛡️ 核心黑科技：全自动防超时自愈体系 (Auto-Detaching Hybrid)
+
+开发者**无需在对话中刻意强调“用异步”**，系统从底层彻底消除超时：
 
 ```mermaid
 flowchart TD
-    subgraph Client ["💻 OpenAI Codex 客户端"]
-        User["开发者"] --> Codex["Codex 主控 Agent"]
-        Codex -->|1. 触发异步长任务\nask_antigravity_async| MCP["FastMCP 服务端"]
-        MCP -->|2. 秒级返回 (<0.5s)\ntask_id + 报告路径| Codex
-        Codex -->|3. 立即汇报接收| User
-        Codex -.->|4. 后续按需查询\ncheck_antigravity_task| MCP
+    User["开发者发起任意提问\n（例如：'让 antigravity 审查代码'）"] --> Codex["Codex 主控 Agent"]
+    Codex -->|调用标准工具\nask_antigravity / antigravity_code_review| MCP["FastMCP 服务端"]
+
+    subgraph Defense ["🛡️ 自动防超时自愈引擎 (antigravity_mcp.py)"]
+        Decision{"任务规模检测"}
+        Decision -->|文件数 >= 3| Early["⚡ 0.1 秒极速秒转\n立即返回任务凭据"]
+        Decision -->|常规小任务| Hybrid["⏳ 安全时限等待 (180s)"]
+        
+        Hybrid -->|< 180s 顺利完成| Direct["✅ 同步返回完整报告"]
+        Hybrid -->|超过 180s 安全死线| Detach["🛡️ 平滑后台分离 (Auto-Detach)\n在 180s 返回成功交接凭据\n（提前 120s 避开 300s 红线！）"]
     end
 
-    subgraph Background ["⚙️ 后台自主执行系统"]
-        MCP -->|5. 创建后台协程| Worker["Async Worker"]
-        Worker -->|6. 状态日志 [START]| Log[("antigravity.log")]
-        Worker -->|7. 自主代码探索与重构| AGY["Google Antigravity Agent"]
-        AGY <-->|8. 推理链| Gateway["本地网关 (GLM-5.3)"]
-        Worker -->|9. 写入独立报告文件| Report[("📄 .antigravity_reports/<task_id>.md")]
-        Worker -->|10. 状态日志 [DONE]| Log
-    end
-
-    subgraph Monitor ["🎨 桌面状态卡片"]
-        Log -.->|实时轮询| Widget["悬浮监控窗\n(动态秒表/三色灯)"]
-    end
+    MCP --> Decision
+    Early & Detach -->|后台任务继续全速执行| Worker["后台持续 Worker\n(不受任何客户端中断影响)"]
+    Worker -->|自动写入 Markdown 报告| Report[("📄 .antigravity_reports/<task_id>.md")]
+    Worker -->|记录秒表与状态| Log[("antigravity.log")]
+    Log -.->|动态秒表| Widget["🎨 桌面悬浮小组件"]
 ```
+
+### 为什么 Codex 永远不会再报 300s 超时？
+- **审查 $\ge 3$ 个文件**：0.1 秒内直接以后台托管模式返回确认。
+- **其他任何任务**：最长等待 180 秒（比 Codex 的 300 秒极限早整整 2 分钟！）。一旦到达 180 秒，**系统自动平滑转入后台托管并向 Codex 返回成功状态**，后台任务绝不中断继续全力生成报告。
+- 👉 **从物理上，Codex 单次调用耗时永远不会触及 300 秒！**
 
 ---
 
 ## 🛠️ 工具矩阵列表
 
-| 工具名 | 模式 | 说明 | 适用场景 |
+| 工具名 | 模式 | 自动自愈机制 | 适用场景 |
 |---|---|---|---|
-| `ask_antigravity` | 同步 | 同步等待 Antigravity 执行完成 | 单文件分析、简单设计、即时提问（< 3 分钟） |
-| `antigravity_code_review` | 同步 | 审查 1~2 个指定文件代码质量 | 小模块代码检查、单函数审查（< 3 分钟） |
-| **`ask_antigravity_async`** | **异步** | **立即返回 `task_id`，后台自主执行并保存报告** | **跨文件重构、全库探索、复杂算法（10~60+ 分钟）** |
-| **`antigravity_code_review_async`** | **异步** | **立即返回 `task_id`，深度多文件代码质量审查** | **3 个以上文件、全量模块或庞大 PR 审查** |
-| **`check_antigravity_task`** | **同步** | **毫秒级查询指定任务的当前状态与进度** | 查看耗时、提取摘要、获取报告路径 |
-| **`list_antigravity_tasks`** | **同步** | **列出最近 5 次后台任务的执行概览** | 全局历史任务追踪与状态审计 |
+| `ask_antigravity` | 智能混合 | 180s 内直接返回；超过 180s 自动转后台并写入报告 | 单文件探索、疑难定位、架构设计 |
+| `antigravity_code_review` | 智能混合 | $\ge 3$ 文件 0.1s 秒转后台；1~2 文件超 180s 自动转后台 | 代码安全与规范审查、批量重构 |
+| `ask_antigravity_async` | 显式异步 | 立即返回任务 ID，后台自主运行 | 开发者/Codex 显式指定超长任务 |
+| `antigravity_code_review_async` | 显式异步 | 立即返回任务 ID，后台深度审计 | 开发者/Codex 显式指定超长审查 |
+| `check_antigravity_task` | 同步查询 | 支持 `wait_seconds` 可选等待，完成后返回报告摘要与路径 | 进度查询、耗时秒表检测 |
+| `list_antigravity_tasks` | 同步列表 | 返回最近后台任务矩阵与状态图标 | 全局历史任务追踪 |
 
 ---
 
@@ -82,31 +80,19 @@ flowchart TD
 .\install.ps1
 ```
 
-> 自动完成依赖安装、脚本拷贝与 `~/.codex/config.toml` 配置注册。
-
 ### 2. 启动悬浮监控
 
-双击桌面的 **【启动Antigravity监控窗.bat】**，悬浮小卡片常驻屏幕右上角。
+双击桌面的 **【启动Antigravity监控窗.bat】**，悬浮小卡片常驻屏幕右上角，实时提供秒表走字与三色灯提示。
 
-### 3. 在 Codex 中使用
+### 3. 日常自由使用
 
-- **对于即时短任务**：
-  > *"请让 antigravity 看看这个函数的正则表达式写得对不对"*
-- **对于大型耗时任务（推荐异步）**：
-  > *"请委派 antigravity 异步审查整个 investment-assistant 项目，重点看数据流异常处理与锁竞争"*
+在 Codex 中直接下达指令，**无需关心后台细节，无需输入“异步”**：
 
-Codex 将调用 `ask_antigravity_async`，秒级返回任务 ID。桌面悬浮窗自动进入秒表计时，执行完成后自动生成专属 Markdown 报告！
+```text
+让 antigravity 审查 app/ 下面的 6 个核心数据模块，重点看内存占用和并发死锁风险。
+```
 
----
-
-## ⚙️ 环境变量与配置
-
-| 环境变量 | 默认值 | 作用说明 |
-|---|---|---|
-| `ANTIGRAVITY_BASE_URL` | `http://127.0.0.1:10100/v1` | 本地模型路由网关地址 |
-| `ANTIGRAVITY_MODEL` | `agentrouter/glm-5.3` | 推理模型（实测 GLM-5.3 稳定性最佳） |
-| `ANTIGRAVITY_LOG_FILE` | `~/.codex/mcp_servers/antigravity.log` | 桥接通信日志文件路径 |
-| `ANTIGRAVITY_WORKSPACE` | 当前执行目录 | Antigravity 默认读取的工作区根路径 |
+Codex 将收到秒级托管凭据，任务在后台稳步运行，完成后报告自动落盘于项目目录下的 `.antigravity_reports/` 中！
 
 ---
 
