@@ -144,8 +144,60 @@ async def _execute_antigravity_core(
     workspaces = [ws] if os.path.exists(ws) else None
     api_key = os.environ.get("GEMINI_API_KEY", GEMINI_API_KEY).strip()
 
+    openai_config = LocalOpenAIAgentConfig(
+        base_url=BASE_URL,
+        model=DEFAULT_MODEL,
+        system_instructions=sys_inst,
+        capabilities=CapabilitiesConfig(
+            file_reads=True,
+            file_writes=True,
+            command_execution=True,
+            subagents=True,
+            mcp=True,
+        ),
+        workspaces=workspaces,
+    )
+
+    async def _try_agent_loop(cfg, is_gemini=False):
+        last_err = None
+        for attempt in range(1, MAX_NETWORK_RETRIES + 1):
+            try:
+                response_chunks = []
+                async with Agent(cfg) as agent:
+                    response = await agent.chat(prompt)
+                    async for token in response:
+                        response_chunks.append(token)
+
+                return "".join(response_chunks).strip()
+
+            except Exception as e:
+                last_err = e
+                err_msg = str(e)
+                if is_gemini and ("api key not valid" in err_msg.lower() or "api_key_invalid" in err_msg.lower() or "400" in err_msg):
+                    raise last_err
+                if _is_transient_network_error(err_msg) and attempt < MAX_NETWORK_RETRIES:
+                    delay = RETRY_INITIAL_DELAY * (2 ** (attempt - 1))
+                    tid_prefix = f" [ASYNC:{task_id}]" if task_id else ""
+                    short_err = err_msg.replace("\n", " ").strip()
+                    if len(short_err) > 80:
+                        short_err = short_err[:80] + "..."
+                    log_event(
+                        f"[RETRY]{tid_prefix} 捕获上游网络/代理闪断 (第 {attempt}/{MAX_NETWORK_RETRIES} 次): "
+                        f"{short_err} | 等待 {delay:.1f}s 后自动自愈重试..."
+                    )
+                    if task_id:
+                        rec = _load_task_record(task_id)
+                        if rec:
+                            rec["retry_count"] = attempt
+                            rec["last_error"] = short_err
+                            rec["status_detail"] = f"网络闪断自动自愈中 (第 {attempt} 次重试，等待 {delay:.0f}s)"
+                            _save_task_record(rec)
+                    await asyncio.sleep(delay)
+                    continue
+                raise last_err
+
     if api_key:
-        config = LocalAgentConfig(
+        gemini_config = LocalAgentConfig(
             api_key=api_key,
             system_instructions=sys_inst,
             capabilities=CapabilitiesConfig(
@@ -158,55 +210,20 @@ async def _execute_antigravity_core(
             policies=[policy.allow_all()],
             workspaces=workspaces,
         )
-    else:
-        config = LocalOpenAIAgentConfig(
-            base_url=BASE_URL,
-            model=DEFAULT_MODEL,
-            system_instructions=sys_inst,
-            capabilities=CapabilitiesConfig(
-                file_reads=True,
-                file_writes=True,
-                command_execution=True,
-                subagents=True,
-                mcp=True,
-            ),
-            workspaces=workspaces,
-        )
-
-    last_err = None
-    for attempt in range(1, MAX_NETWORK_RETRIES + 1):
         try:
-            response_chunks = []
-            async with Agent(config) as agent:
-                response = await agent.chat(prompt)
-                async for token in response:
-                    response_chunks.append(token)
-
-            return "".join(response_chunks).strip()
-
+            return await _try_agent_loop(gemini_config, is_gemini=True)
         except Exception as e:
-            last_err = e
-            err_msg = str(e)
-            if _is_transient_network_error(err_msg) and attempt < MAX_NETWORK_RETRIES:
-                delay = RETRY_INITIAL_DELAY * (2 ** (attempt - 1))
-                tid_prefix = f" [ASYNC:{task_id}]" if task_id else ""
-                short_err = err_msg.replace("\n", " ").strip()
-                if len(short_err) > 80:
-                    short_err = short_err[:80] + "..."
-                log_event(
-                    f"[RETRY]{tid_prefix} 捕获上游网络/代理闪断 (第 {attempt}/{MAX_NETWORK_RETRIES} 次): "
-                    f"{short_err} | 等待 {delay:.1f}s 后自动自愈重试..."
-                )
-                if task_id:
-                    rec = _load_task_record(task_id)
-                    if rec:
-                        rec["retry_count"] = attempt
-                        rec["last_error"] = short_err
-                        rec["status_detail"] = f"网络闪断自动自愈中 (第 {attempt} 次重试，等待 {delay:.0f}s)"
-                        _save_task_record(rec)
-                await asyncio.sleep(delay)
-                continue
-            raise last_err
+            tid_prefix = f" [ASYNC:{task_id}]" if task_id else ""
+            short_e = str(e).replace("\n", " ").strip()[:100]
+            log_event(f"[FALLBACK]{tid_prefix} 原生 Gemini 引擎调用受阻 ({short_e})，自动无缝降级至备用中继引擎 ({DEFAULT_MODEL}) 兜底执行...")
+            if task_id:
+                rec = _load_task_record(task_id)
+                if rec:
+                    rec["status_detail"] = f"Gemini 异常，已自动降级至备用中继 ({DEFAULT_MODEL}) 持续运行"
+                    _save_task_record(rec)
+            return await _try_agent_loop(openai_config, is_gemini=False)
+    else:
+        return await _try_agent_loop(openai_config, is_gemini=False)
 
 
 async def _run_async_worker(
