@@ -40,7 +40,7 @@ LOG_FILE = os.environ.get(
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash").strip()
 BASE_URL = os.environ.get("ANTIGRAVITY_BASE_URL", "http://127.0.0.1:10100/v1")
-DEFAULT_MODEL = os.environ.get("ANTIGRAVITY_MODEL", "agentrouter/glm-5.3")
+DEFAULT_MODEL = os.environ.get("ANTIGRAVITY_MODEL", "agentrouter/deepseek-v4-flash")
 TASKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tasks")
 os.makedirs(TASKS_DIR, exist_ok=True)
 
