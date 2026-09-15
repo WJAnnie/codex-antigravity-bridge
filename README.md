@@ -78,16 +78,18 @@ flowchart TD
 
 ---
 
-## 🛠️ 工具矩阵列表
+## 🛠️ 工具与技能矩阵列表
 
-| 工具名 | 模式 | 自动自愈机制 | 适用场景 |
+| 工具/技能名 | 类型 | 核心能力 | 适用场景 |
 |---|---|---|---|
-| `ask_antigravity` | 智能混合 | 180s 内直接返回；超过 180s 自动转后台并写入报告 | 单文件探索、疑难定位、架构设计 |
-| `antigravity_code_review` | 智能混合 | $\ge 3$ 文件 0.1s 秒转后台；1~2 文件超 180s 自动转后台 | 代码安全与规范审查、批量重构 |
-| `ask_antigravity_async` | 显式异步 | 立即返回任务 ID，后台自主运行 | 开发者/Codex 显式指定超长任务 |
-| `antigravity_code_review_async` | 显式异步 | 立即返回任务 ID，后台深度审计 | 开发者/Codex 显式指定超长审查 |
-| `check_antigravity_task` | 同步查询 | 支持 `wait_seconds` 可选等待，完成后返回报告摘要与路径 | 进度查询、耗时秒表检测 |
-| `list_antigravity_tasks` | 同步列表 | 返回最近后台任务矩阵与状态图标 | 全局历史任务追踪 |
+| `call-agy` (Skill) | **Codex 技能** | 自动意图识别，引导 Codex 委派重型任务至 Antigravity | 复杂多文件调研、第二视角审计、大批量生成测试/文档 |
+| `agy -p` (CLI) | **全局命令行** | 命令行直连五级自愈中继，支持 `--print-timeout` 与 `--add-dir` | 终端脚本批处理、CI 跑测、无 MCP 环境调用 |
+| `ask_antigravity` | MCP 工具 | 180s 内直接返回；超过 180s 自动转后台并写入报告 | 单文件探索、疑难定位、架构设计 |
+| `antigravity_code_review` | MCP 工具 | $\ge 3$ 文件 0.1s 秒转后台；1~2 文件超 180s 自动转后台 | 代码安全与规范审查、批量重构 |
+| `ask_antigravity_async` | MCP 显式异步 | 立即返回任务 ID，后台自主运行 | 开发者/Codex 显式指定超长任务 |
+| `antigravity_code_review_async` | MCP 显式异步 | 立即返回任务 ID，后台深度审计 | 开发者/Codex 显式指定超长审查 |
+| `check_antigravity_task` | MCP 同步查询 | 支持 `wait_seconds` 可选等待，完成后返回报告摘要与路径 | 进度查询、耗时秒表检测 |
+| `list_antigravity_tasks` | MCP 同步列表 | 返回最近后台任务矩阵与状态图标 | 全局历史任务追踪 |
 
 ---
 
