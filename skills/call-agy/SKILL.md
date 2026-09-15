@@ -20,6 +20,7 @@ Antigravity has full file write and command execution capabilities (`--dangerous
 - **Large config & CI/CD workflow generation**: GitHub Actions workflows, complex deployment configs.
 
 ### ❌ Strictly PROHIBITED (Token Wasting):
+- **Subagent recursive delegation (严禁子智能体转派)**: **STRICTLY PROHIBITED for subagents (如 executor, reviewer, planner)**. Only the root Codex master session is allowed to call `agy` or this skill. Subagents must do their assigned work directly without outsourcing!
 - **Read-only reviews ("SPEC COMPLIANCE review", "Read-only: do not edit")**: NEVER delegate read-only reviews that output thousands of critique words back into Codex's context window. Codex handles review and verification itself or via local pytest/ruff.
 - **Passive essay critiques**: Any prompt asking for critique without modifying files.
 - **Interactive clarifying questions**.

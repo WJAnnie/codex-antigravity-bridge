@@ -42,50 +42,100 @@ BRAIN_DIR = os.path.expanduser(r"~/.gemini/antigravity/brain")
 
 
 def discover_antigravity_env() -> dict[str, str]:
-    """Auto-discovers running Antigravity Language Server address & CSRF token if not in env."""
+    """
+    Auto-discovers running Antigravity Language Server address & CSRF token if not in env.
+    Uses ultra-fast psutil inspection (~10ms) with direct socket probing, and strictly
+    clears external HTTP/HTTPS proxies so local gRPC never gets routed through Clash.
+    """
     env = dict(os.environ)
-    if env.get("ANTIGRAVITY_LS_ADDRESS") and env.get("ANTIGRAVITY_CSRF_TOKEN"):
-        return env
 
-    try:
-        # Find language_server.exe process
-        ps_cmd = "Get-CimInstance Win32_Process -Filter \"Name = 'language_server.exe'\" | Select-Object ProcessId, CommandLine | ConvertTo-Json"
-        res = subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, text=True)
-        if not res.stdout.strip():
-            return env
+    # If already fully configured, just sanitize proxy settings
+    ls_addr = (env.get("ANTIGRAVITY_LS_ADDRESS") or "").strip()
+    csrf_tok = (env.get("ANTIGRAVITY_CSRF_TOKEN") or "").strip()
 
-        data = json.loads(res.stdout)
-        if isinstance(data, list):
-            data = data[0]
+    if not (ls_addr and csrf_tok):
+        found = False
+        # 1. Ultra-fast psutil discovery (<15ms)
+        try:
+            import psutil
+            ls_proc = None
+            csrf = None
+            for p in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    if p.info['name'] and p.info['name'].lower() == 'language_server.exe':
+                        cmdline = " ".join(p.info['cmdline'] or [])
+                        if '--csrf_token' in cmdline:
+                            m = re.search(r'--csrf_token\s+([a-f0-9\-]+)', cmdline)
+                            if m:
+                                csrf = m.group(1)
+                                ls_proc = p
+                                break
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
 
-        pid = data.get("ProcessId")
-        cmdline = data.get("CommandLine", "")
-        csrf_match = re.search(r'--csrf_token\s+([a-f0-9\-]+)', cmdline)
-        if not csrf_match:
-            return env
-        csrf = csrf_match.group(1)
+            if ls_proc and csrf:
+                ports = []
+                try:
+                    for conn in ls_proc.net_connections(kind='tcp'):
+                        if conn.status == psutil.CONN_LISTEN:
+                            ports.append(conn.laddr.port)
+                except Exception:
+                    pass
 
-        # Query listening ports
-        port_cmd = f"Get-NetTCPConnection -OwningProcess {pid} -State Listen | Select-Object -ExpandProperty LocalPort"
-        res_port = subprocess.run(["powershell", "-NoProfile", "-Command", port_cmd], capture_output=True, text=True)
-        ports = [int(p.strip()) for p in res_port.stdout.strip().splitlines() if p.strip().isdigit()]
+                # Direct probe without proxy
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                for port in ports:
+                    try:
+                        req = urllib.request.Request(f"http://127.0.0.1:{port}/", headers={"x-csrf-token": csrf})
+                        with opener.open(req, timeout=0.5) as resp:
+                            if resp.status == 200:
+                                env["ANTIGRAVITY_LS_ADDRESS"] = f"localhost:{port}"
+                                env["ANTIGRAVITY_CSRF_TOKEN"] = csrf
+                                found = True
+                                break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
-        http_port = None
-        for port in ports:
+        # 2. PowerShell fallback (only if psutil unavailable or failed)
+        if not found:
             try:
-                req = urllib.request.Request(f"http://127.0.0.1:{port}/", headers={"x-csrf-token": csrf})
-                with urllib.request.urlopen(req, timeout=1) as resp:
-                    if resp.status == 200:
-                        http_port = port
-                        break
+                ps_cmd = "Get-CimInstance Win32_Process -Filter \"Name = 'language_server.exe'\" | Select-Object ProcessId, CommandLine | ConvertTo-Json"
+                res = subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, text=True)
+                if res.stdout.strip():
+                    data = json.loads(res.stdout)
+                    if isinstance(data, list):
+                        data = data[0]
+                    pid = data.get("ProcessId")
+                    cmdline = data.get("CommandLine", "")
+                    csrf_match = re.search(r'--csrf_token\s+([a-f0-9\-]+)', cmdline)
+                    if csrf_match:
+                        csrf = csrf_match.group(1)
+                        port_cmd = f"Get-NetTCPConnection -OwningProcess {pid} -State Listen | Select-Object -ExpandProperty LocalPort"
+                        res_port = subprocess.run(["powershell", "-NoProfile", "-Command", port_cmd], capture_output=True, text=True)
+                        ports = [int(p.strip()) for p in res_port.stdout.strip().splitlines() if p.strip().isdigit()]
+                        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                        for port in ports:
+                            try:
+                                req = urllib.request.Request(f"http://127.0.0.1:{port}/", headers={"x-csrf-token": csrf})
+                                with opener.open(req, timeout=0.5) as resp:
+                                    if resp.status == 200:
+                                        env["ANTIGRAVITY_LS_ADDRESS"] = f"localhost:{port}"
+                                        env["ANTIGRAVITY_CSRF_TOKEN"] = csrf
+                                        break
+                            except Exception:
+                                pass
             except Exception:
                 pass
 
-        if http_port and csrf:
-            env["ANTIGRAVITY_LS_ADDRESS"] = f"localhost:{http_port}"
-            env["ANTIGRAVITY_CSRF_TOKEN"] = csrf
-    except Exception:
-        pass
+    # 3. CRITICAL: Strip all external HTTP/HTTPS proxies from run_env
+    # language_server.exe agentapi ONLY talks to localhost via gRPC.
+    # Routing local gRPC to Clash (127.0.0.1:7890) causes instant socket abort!
+    for k in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]:
+        env.pop(k, None)
+    env["NO_PROXY"] = "*"
+    env["no_proxy"] = "*"
 
     return env
 
@@ -131,6 +181,9 @@ async def run_official_headless(prompt: str, workspace: str, model: str, timeout
     cmd_prefix = get_agentapi_cmd()
     launch_cmd = cmd_prefix + ["new-conversation", f"--model={model}", full_prompt]
     run_env = discover_antigravity_env()
+
+    if not run_env.get("ANTIGRAVITY_LS_ADDRESS"):
+        raise RuntimeError("未检测到运行中的 Antigravity 语言服务器 (language_server.exe)。请确保 Google Antigravity 客户端在后台运行。")
 
     log_event(f"[START] [CLI:{task_id}] 启动官方 Antigravity Headless 引擎 (模型: {model}) | 工作区: {workspace}")
 
