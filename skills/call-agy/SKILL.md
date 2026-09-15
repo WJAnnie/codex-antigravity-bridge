@@ -27,7 +27,7 @@ Antigravity has full file write and command execution capabilities (`--dangerous
 ## Execution Methods
 
 ### Method 1: Tier 1 首选通道 - 本地命令行直接编写与测试 (`agy -p`) (Preferred)
-通过原生终端命令直接调用 Antigravity，落地修改代码并返回极简汇报（<150字），底层由本地高可用中继集群驱动：
+通过官方 Antigravity Headless CLI (`agy -p`) 直接调用，模型为官方 Gemini 3.8 Flash，无外部 API Key 配额限制，落地修改代码并返回极简汇报（<150字）：
 
 ```bash
 agy -p "{{ARGUMENTS}}" --dangerously-skip-permissions --print-timeout 10m
