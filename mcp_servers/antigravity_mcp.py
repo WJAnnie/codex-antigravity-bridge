@@ -45,16 +45,15 @@ LOG_FILE = os.environ.get(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "antigravity.log")
 )
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-# 推理梯队配置（中继集群为 Tier 1 主力，Google Gemini 原生降为 Tier 2 应急兜底，彻底解决 Google API 每天 20 次配额瓶颈）
+# 推理梯队配置（Tier 1 原生首发 gemini-3.8-flash，配额耗尽/异常时无缝降级至中继集群与 2.5-flash）
+TIER1_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash").strip()
 RELAY_M1_MODEL = os.environ.get("ANTIGRAVITY_RELAY_M1", "agentrouter/gpt-5.6-sol").strip()
 RELAY_M2_MODEL = os.environ.get("ANTIGRAVITY_RELAY_M2", "agentrouter/deepseek-v4-flash").strip()
 RELAY_M3_MODEL = os.environ.get("ANTIGRAVITY_RELAY_M3", "agentrouter/glm-5.3").strip()
-GEMINI_FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash").strip()
-TIER1_MODEL = RELAY_M2_MODEL  # 兼容旧引用
 TIER2_MODEL = RELAY_M2_MODEL
-TIER3_MODEL = GEMINI_FALLBACK_MODEL
+TIER3_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash").strip()
 BASE_URL = os.environ.get("ANTIGRAVITY_BASE_URL", "http://127.0.0.1:10100/v1")
-DEFAULT_MODEL = RELAY_M2_MODEL
+DEFAULT_MODEL = TIER1_MODEL
 TASKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tasks")
 os.makedirs(TASKS_DIR, exist_ok=True)
 
@@ -107,7 +106,7 @@ def get_engine_name() -> str:
     """返回当前底层运行的推理引擎名称与级联状态"""
     sol_active = (time.time() >= _gpt56_sol_cooling_until)
     lead_relay = "GPT-5.6-Sol" if sol_active else "DeepSeek-V4"
-    return f"[{lead_relay} -> DeepSeek -> GLM-5.3] -> Gemini (应急兜底)"
+    return f"Gemini 3.8-Flash (原生) -> [{lead_relay} -> DeepSeek -> GLM-5.3] -> 2.5-Flash"
 
 # Safe auto-detach timeout: 180s (Codex client times out at 300s, giving 120s buffer)
 SAFE_SYNC_TIMEOUT = float(os.environ.get("ANTIGRAVITY_SYNC_TIMEOUT", "180.0"))
@@ -283,24 +282,50 @@ async def _execute_antigravity_core(
     gemini_location_cooling = (now_ts < _gemini_location_cooling_until)
 
     # =========================================================================
-    # Tier 1 (主力高可用中继梯队): M1 (GPT-5.6-Sol) -> M2 (DeepSeek-V4) -> M3 (GLM-5.3)
-    # 本地中继无 Google API 每天 20 次的极低配额与区域限制，首发直通，零等待！
+    # Tier 1 (Antigravity 原生首发): gemini-3.8-flash
+    # agy CLI / Antigravity 官方原生前沿旗舰模型，极速响应与深度推理
+    # =========================================================================
+    if api_key and not gemini_38_cooling and not gemini_location_cooling:
+        try:
+            return await _try_agent_loop(_build_gemini_cfg(TIER1_MODEL), is_gemini=True, tier_name=f"Tier 1 原生 ({TIER1_MODEL})")
+        except Exception as e:
+            short_e = str(e).replace("\n", " ").strip()[:100]
+            if "429" in short_e or "quota" in short_e.lower():
+                _gemini_38_cooling_until = time.time() + 1800  # 自动进入 30 分钟配额冷却期
+                log_event(f"[FALLBACK]{tid_prefix} Tier 1 原生 ({TIER1_MODEL}) 配额耗尽 (429)，自动降级至中继梯队 ({RELAY_M2_MODEL})...")
+            elif "user location is not supported" in short_e.lower() or "location" in short_e.lower():
+                _gemini_location_cooling_until = time.time() + 3600  # 区域不支持，自动冷却 1 小时屏蔽 Google 原生
+                log_event(f"[LOCATION]{tid_prefix} Google 原生 API 处于不支持地理区域 ({short_e})，自动流转至中继梯队全面接管...")
+            else:
+                log_event(f"[FALLBACK]{tid_prefix} Tier 1 原生 ({TIER1_MODEL}) 受阻 ({short_e})，自动流转至中继梯队 ({RELAY_M2_MODEL})...")
+            if task_id:
+                rec = _load_task_record(task_id)
+                if rec:
+                    rec["status_detail"] = f"Tier 1 原生受阻，切至中继梯队"
+                    _save_task_record(rec)
+    elif gemini_38_cooling and api_key and not gemini_location_cooling:
+        remain = max(1, int((_gemini_38_cooling_until - time.time()) / 60))
+        log_event(f"[DISPATCH]{tid_prefix} Tier 1 原生 ({TIER1_MODEL}) 配额冷却中 (余 {remain} 分钟)，优先直通中继梯队...")
+
+    # =========================================================================
+    # Tier 2 (本地中继高可用梯队): M1 (GPT-5.6-Sol) -> M2 (DeepSeek-V4) -> M3 (GLM-5.3)
+    # 当 Google 原生配额耗尽或受阻时，中继无配额限制，无缝平滑保障执行
     # =========================================================================
     relay_errors = []
 
     # --- 优先级一: agentrouter/gpt-5.6-sol (每天 0:00, 8:00, 16:00 限量旗舰) ---
     if time.time() >= _gpt56_sol_cooling_until:
         try:
-            return await _try_agent_loop(_build_openai_cfg(RELAY_M1_MODEL), is_gemini=False, tier_name=f"Tier 1 优选一 ({RELAY_M1_MODEL})")
+            return await _try_agent_loop(_build_openai_cfg(RELAY_M1_MODEL), is_gemini=False, tier_name=f"中继优选一 ({RELAY_M1_MODEL})")
         except Exception as e_m1:
             relay_errors.append(e_m1)
             short_m1 = str(e_m1).replace("\n", " ").strip()[:120]
             if "402" in short_m1 or "budget pool quota" in short_m1.lower() or "budget" in short_m1.lower():
                 _gpt56_sol_cooling_until = _get_next_sol_refresh_time()
                 next_rf = datetime.fromtimestamp(_gpt56_sol_cooling_until).strftime("%H:%M")
-                log_event(f"[FALLBACK]{tid_prefix} Tier 1 优选一 ({RELAY_M1_MODEL}) 限量额度已耗尽 (402 Budget pool quota exhausted)，自动冷却至下一放量批次 ({next_rf})，平滑切换至主力二 ({RELAY_M2_MODEL})...")
+                log_event(f"[FALLBACK]{tid_prefix} 中继优选一 ({RELAY_M1_MODEL}) 限量额度已耗尽 (402)，自动冷却至下一放量批次 ({next_rf})，平滑切换至主力二 ({RELAY_M2_MODEL})...")
             else:
-                log_event(f"[FALLBACK]{tid_prefix} Tier 1 优选一 ({RELAY_M1_MODEL}) 遇到异常 ({short_m1})，切换至主力二 ({RELAY_M2_MODEL})...")
+                log_event(f"[FALLBACK]{tid_prefix} 中继优选一 ({RELAY_M1_MODEL}) 遇到异常 ({short_m1})，切换至主力二 ({RELAY_M2_MODEL})...")
             if task_id:
                 rec = _load_task_record(task_id)
                 if rec:
@@ -309,15 +334,15 @@ async def _execute_antigravity_core(
     else:
         remain_m1 = max(1, int((_gpt56_sol_cooling_until - time.time()) / 60))
         next_rf = datetime.fromtimestamp(_gpt56_sol_cooling_until).strftime("%H:%M")
-        log_event(f"[DISPATCH]{tid_prefix} Tier 1 优选一 ({RELAY_M1_MODEL}) 限量额度冷却中 (下一批 {next_rf}，余 {remain_m1} 分钟)，优先直通主力二 ({RELAY_M2_MODEL})...")
+        log_event(f"[DISPATCH]{tid_prefix} 中继优选一 ({RELAY_M1_MODEL}) 限量额度冷却中 (下一批 {next_rf}，余 {remain_m1} 分钟)，优先直通主力二 ({RELAY_M2_MODEL})...")
 
-    # --- 优先级二: agentrouter/deepseek-v4-flash (高并发主力开发与审查) ---
+    # --- 优先级二: agentrouter/deepseek-v4-flash (高并发主力开发) ---
     try:
-        return await _try_agent_loop(_build_openai_cfg(RELAY_M2_MODEL), is_gemini=False, tier_name=f"Tier 1 主力二 ({RELAY_M2_MODEL})")
+        return await _try_agent_loop(_build_openai_cfg(RELAY_M2_MODEL), is_gemini=False, tier_name=f"中继主力二 ({RELAY_M2_MODEL})")
     except Exception as e_m2:
         relay_errors.append(e_m2)
         short_m2 = str(e_m2).replace("\n", " ").strip()[:120]
-        log_event(f"[FALLBACK]{tid_prefix} Tier 1 主力二 ({RELAY_M2_MODEL}) 遇到异常 ({short_m2})，自动降级至兜底三 ({RELAY_M3_MODEL})...")
+        log_event(f"[FALLBACK]{tid_prefix} 中继主力二 ({RELAY_M2_MODEL}) 遇到异常 ({short_m2})，自动降级至兜底三 ({RELAY_M3_MODEL})...")
         if task_id:
             rec = _load_task_record(task_id)
             if rec:
@@ -326,36 +351,36 @@ async def _execute_antigravity_core(
 
     # --- 优先级三: agentrouter/glm-5.3 (中继终极保底) ---
     try:
-        return await _try_agent_loop(_build_openai_cfg(RELAY_M3_MODEL), is_gemini=False, tier_name=f"Tier 1 兜底三 ({RELAY_M3_MODEL})")
+        return await _try_agent_loop(_build_openai_cfg(RELAY_M3_MODEL), is_gemini=False, tier_name=f"中继兜底三 ({RELAY_M3_MODEL})")
     except Exception as e_m3:
         relay_errors.append(e_m3)
         short_m3 = str(e_m3).replace("\n", " ").strip()[:120]
-        log_event(f"[FALLBACK]{tid_prefix} Tier 1 兜底三 ({RELAY_M3_MODEL}) 遇到异常 ({short_m3})，尝试启用 Tier 2 Google 原生远端兜底...")
+        log_event(f"[FALLBACK]{tid_prefix} 中继兜底三 ({RELAY_M3_MODEL}) 遇到异常 ({short_m3})，尝试启用 Tier 3 原生高配额保底...")
         if task_id:
             rec = _load_task_record(task_id)
             if rec:
-                rec["status_detail"] = f"中继全部异常，尝试切至 Tier 2 Google 原生保底"
+                rec["status_detail"] = f"中继全部异常，尝试切至 Tier 3 原生保底"
                 _save_task_record(rec)
 
     # =========================================================================
-    # Tier 2 (远端极端应急兜底): Google 原生 Gemini (仅当中继全部异常时才调用，避免浪费极少额度)
+    # Tier 3 (终极原生高配额保底): gemini-2.5-flash
     # =========================================================================
     if api_key and (time.time() >= _gemini_location_cooling_until) and (time.time() >= _gemini_25_cooling_until):
-        log_event(f"[TIER2-BACKUP]{tid_prefix} 中继梯队不可用，启动 Tier 2 远端应急保底: {TIER3_MODEL}...")
+        log_event(f"[TIER3]{tid_prefix} 启动 Tier 3 原生保底: {TIER3_MODEL}...")
         try:
-            return await _try_agent_loop(_build_gemini_cfg(TIER3_MODEL), is_gemini=True, tier_name=f"Tier 2 应急 ({TIER3_MODEL})")
+            return await _try_agent_loop(_build_gemini_cfg(TIER3_MODEL), is_gemini=True, tier_name=f"Tier 3 兜底 ({TIER3_MODEL})")
         except Exception as e_t3:
             short_t3 = str(e_t3).replace("\n", " ").strip()[:120]
             if "429" in short_t3 or "quota" in short_t3.lower():
-                _gemini_25_cooling_until = time.time() + 1800  # 自动进入 30 分钟配额冷却期
-                log_event(f"[FALLBACK]{tid_prefix} Tier 2 应急 ({TIER3_MODEL}) 配额耗尽 (429)，冷却 30 分钟...")
+                _gemini_25_cooling_until = time.time() + 1800
+                log_event(f"[FALLBACK]{tid_prefix} Tier 3 ({TIER3_MODEL}) 配额耗尽 (429)，冷却 30 分钟...")
             elif "user location is not supported" in short_t3.lower() or "location" in short_t3.lower():
                 _gemini_location_cooling_until = time.time() + 3600
-                log_event(f"[LOCATION]{tid_prefix} Tier 2 检测到 IP 区域不支持 ({short_t3})，冷却 1 小时...")
-            raise RuntimeError(f"全链路推理梯队均不可用。本地中继异常: {relay_errors[-1] if relay_errors else 'None'}, Google 应急异常: {e_t3}")
+                log_event(f"[LOCATION]{tid_prefix} Tier 3 检测到 IP 区域不支持 ({short_t3})，冷却 1 小时...")
+            raise RuntimeError(f"全链路推理梯队均不可用。本地中继异常: {relay_errors[-1] if relay_errors else 'None'}, Google 兜底异常: {e_t3}")
     else:
         reason = "区域不支持" if time.time() < _gemini_location_cooling_until else ("配额冷却中" if time.time() < _gemini_25_cooling_until else "未配置 API Key")
-        raise RuntimeError(f"全链路推理梯队均不可用。本地中继异常列表: {relay_errors}，Tier 2 Google 原生处于{reason}跳过。")
+        raise RuntimeError(f"全链路推理梯队均不可用。本地中继异常列表: {relay_errors}，Tier 3 Google 原生处于{reason}跳过。")
 
 
 def _try_rescue_brain_artifact(start_time: float, target_report_file: str, ws: str, task_id: str) -> Optional[str]:
