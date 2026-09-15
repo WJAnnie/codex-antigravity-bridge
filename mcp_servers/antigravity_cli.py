@@ -1,17 +1,20 @@
 """
-Antigravity CLI (agy) Wrapper
-Implements the standard `agy -p` / `agy --print` CLI interface,
-backed by the 5-tier self-healing cascade engine (GPT-5.6-Sol / DeepSeek-V4 / GLM-5.3 / Gemini).
-Compatible with call-agy, claude-code-agy-CLI-skill, and direct terminal usage.
+Google Antigravity Official Headless CLI (agy)
+Native CLI runner backed by the official Antigravity engine (Gemini 3.8 Flash).
+Authenticates via official Google Antigravity account (OAuth / ~/.gemini/oauth_creds.json).
+Zero external API key quota constraints. Full tool execution capabilities.
+Compatible with Codex `call-agy`, claudecode, and command-line execution.
 """
 
 import sys
 import os
+import shutil
 import argparse
 import asyncio
 import time
+import json
 import uuid
-import logging
+import subprocess
 
 # 强制标准输入输出为 UTF-8 编码，防止 Windows 终端中文乱码
 if hasattr(sys.stdout, "reconfigure"):
@@ -21,22 +24,31 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-# Add current directory to path
+# Add current directory to path for widget logging & task records
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from antigravity_mcp import _execute_antigravity_core, log_event, _save_task_record, get_engine_name
+try:
+    from antigravity_mcp import log_event, _save_task_record
+except Exception:
+    def log_event(msg: str):
+        pass
+    def _save_task_record(record: dict):
+        pass
 
-# 彻底抑制底层的 RAW WS MSG 与上游警告噪音，保证控制台输出纯净 Markdown
-def _silence_loggers():
-    logging.root.setLevel(logging.ERROR)
-    for h in logging.root.handlers:
-        h.setLevel(logging.ERROR)
-    for _logger_name in ["google", "google.antigravity", "websockets", "urllib3", "root", "asyncio"]:
-        lg = logging.getLogger(_logger_name)
-        lg.setLevel(logging.ERROR)
-        for h in lg.handlers:
-            h.setLevel(logging.ERROR)
+LS_BINARY = r"C:\Users\Administrator\AppData\Local\Programs\Antigravity\resources\bin\language_server.exe"
+AGENTAPI_BAT = os.path.expanduser(r"~/.gemini/antigravity/bin/agentapi.bat")
+BRAIN_DIR = os.path.expanduser(r"~/.gemini/antigravity/brain")
 
-_silence_loggers()
+
+def get_agentapi_cmd() -> list[str]:
+    """Locate the official Antigravity agentapi binary/script."""
+    if os.path.exists(LS_BINARY):
+        return [LS_BINARY, "agentapi"]
+    if os.path.exists(AGENTAPI_BAT):
+        return [AGENTAPI_BAT]
+    which_agentapi = shutil.which("agentapi")
+    if which_agentapi:
+        return [which_agentapi]
+    return [LS_BINARY, "agentapi"]
 
 
 def parse_timeout(timeout_str: str) -> float:
@@ -54,10 +66,99 @@ def parse_timeout(timeout_str: str) -> float:
         return 600.0
 
 
-async def run_cli(prompt: str, workspace: str, timeout_sec: float) -> int:
+async def run_official_headless(prompt: str, workspace: str, model: str, timeout_sec: float, task_id: str) -> str:
+    """
+    Spawns an official Antigravity conversation in headless mode using Gemini 3.8 Flash,
+    streams tool events to the desktop widget, and returns the final result.
+    """
+    cmd_prefix = get_agentapi_cmd()
+    launch_cmd = cmd_prefix + ["new-conversation", f"--model={model}", prompt]
+    
+    log_event(f"[START] [CLI:{task_id}] 启动官方 Antigravity Headless 引擎 (模型: {model}) | 工作区: {workspace}")
+    
+    # Run agentapi new-conversation in the target workspace directory
+    proc = await asyncio.to_thread(
+        subprocess.run,
+        launch_cmd,
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        encoding="utf-8"
+    )
+    
+    if proc.returncode != 0:
+        err_detail = proc.stderr.strip() or proc.stdout.strip()
+        raise RuntimeError(f"agentapi new-conversation failed (code {proc.returncode}): {err_detail}")
+    
+    try:
+        data = json.loads(proc.stdout)
+        cid = data["response"]["newConversation"]["conversationId"]
+    except Exception as e:
+        raise RuntimeError(f"Failed to parse newConversation response: {proc.stdout} (err: {e})")
+
+    log_path = os.path.join(BRAIN_DIR, cid, ".system_generated", "logs", "transcript.jsonl")
+    log_event(f"[TRACK] [CLI:{task_id}] 会话已创建: {cid[:8]}... | 跟踪转录日志")
+
+    start_time = time.time()
+    last_processed_idx = 0
+    final_output = ""
+    seen_tools = set()
+
+    # Poll transcript until completion or timeout
+    while time.time() - start_time < timeout_sec:
+        if os.path.exists(log_path):
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                    lines = [l.strip() for l in f if l.strip()]
+            except Exception:
+                lines = []
+
+            if len(lines) > last_processed_idx:
+                for idx in range(last_processed_idx, len(lines)):
+                    try:
+                        step = json.loads(lines[idx])
+                        stype = step.get("type")
+                        status = step.get("status")
+                        tools = step.get("tool_calls", [])
+                        content = step.get("content", "")
+
+                        if tools:
+                            for t in tools:
+                                tname = t.get("name", "tool")
+                                if tname not in seen_tools:
+                                    seen_tools.add(tname)
+                                    log_event(f"[TOOL]  [CLI:{task_id}] 执行工具: {tname}")
+                        elif content and stype == "PLANNER_RESPONSE" and status == "DONE":
+                            final_output = content
+                    except Exception:
+                        pass
+                last_processed_idx = len(lines)
+
+                # Check if last step indicates turn completion
+                if lines:
+                    try:
+                        last_step = json.loads(lines[-1])
+                        if (last_step.get("type") == "PLANNER_RESPONSE"
+                            and last_step.get("status") == "DONE"
+                            and last_step.get("content")
+                            and not last_step.get("tool_calls")):
+                            # Let it stabilize for 0.5s
+                            await asyncio.sleep(0.5)
+                            final_output = last_step.get("content", "").strip()
+                            return final_output
+                    except Exception:
+                        pass
+
+        await asyncio.sleep(0.8)
+
+    if final_output:
+        return final_output
+    raise asyncio.TimeoutError(f"Antigravity headless execution timed out after {timeout_sec:.0f}s")
+
+
+async def run_cli(prompt: str, workspace: str, model: str, timeout_sec: float) -> int:
     task_id = f"cli-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
     start_time = time.time()
-    engine_name = get_engine_name()
     
     # Save initial task record for desktop widget display
     record = {
@@ -69,23 +170,35 @@ async def run_cli(prompt: str, workspace: str, timeout_sec: float) -> int:
         "prompt": prompt,
         "prompt_summary": prompt.replace("\n", " ").strip()[:60],
         "start_time": start_time,
+        "model": model,
         "report_file": os.path.join(workspace, ".antigravity_reports", f"{task_id}.md")
     }
     _save_task_record(record)
-    log_event(f"[START] [CLI:{task_id}] 触发 agy CLI | 引擎: {engine_name} | 工作区: {workspace} | 任务: {record['prompt_summary']}")
 
     try:
-        # Run with timeout
-        result_text = await asyncio.wait_for(
-            _execute_antigravity_core(prompt, workspace, task_id=task_id),
-            timeout=timeout_sec
+        result_text = await run_official_headless(
+            prompt=prompt,
+            workspace=workspace,
+            model=model,
+            timeout_sec=timeout_sec,
+            task_id=task_id
         )
         elapsed = time.time() - start_time
         
-        # Save report
-        os.makedirs(os.path.dirname(record["report_file"]), exist_ok=True)
-        with open(record["report_file"], "w", encoding="utf-8") as rf:
-            rf.write(f"# 🤖 Antigravity CLI Execution Result\n\n- **Task ID**: `{task_id}`\n- **Time**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n- **Elapsed**: {elapsed:.2f}s\n- **Engine**: {engine_name}\n\n---\n\n## 📝 Prompt\n\n{prompt}\n\n---\n\n## 📋 Output\n\n{result_text}\n")
+        # Save markdown report
+        try:
+            os.makedirs(os.path.dirname(record["report_file"]), exist_ok=True)
+            with open(record["report_file"], "w", encoding="utf-8") as rf:
+                rf.write(f"# 🤖 Antigravity Official CLI Execution Result\n\n"
+                         f"- **Task ID**: `{task_id}`\n"
+                         f"- **Time**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                         f"- **Elapsed**: {elapsed:.2f}s\n"
+                         f"- **Engine**: Google Antigravity Headless (Model: `{model}`)\n"
+                         f"- **Workspace**: `{workspace}`\n\n---\n\n"
+                         f"## 📝 Prompt\n\n{prompt}\n\n---\n\n"
+                         f"## 📋 Output\n\n{result_text}\n")
+        except Exception:
+            pass
         
         record["status"] = "COMPLETED"
         record["end_time"] = time.time()
@@ -93,7 +206,7 @@ async def run_cli(prompt: str, workspace: str, timeout_sec: float) -> int:
         record["return_chars"] = len(result_text)
         record["snippet"] = result_text[:500]
         _save_task_record(record)
-        log_event(f"[DONE]  [CLI:{task_id}] 执行成功 | 耗时: {elapsed:.2f}s | 字符数: {len(result_text)}")
+        log_event(f"[DONE]  [CLI:{task_id}] 官方 CLI 执行成功 | 耗时: {elapsed:.2f}s | 返回字符数: {len(result_text)}")
 
         # Output to stdout directly (Unicode safe)
         try:
@@ -125,20 +238,22 @@ async def run_cli(prompt: str, workspace: str, timeout_sec: float) -> int:
         record["elapsed_sec"] = elapsed
         record["error"] = err_msg
         _save_task_record(record)
-        log_event(f"[ERROR] [CLI:{task_id}] 执行失败 | 耗时: {elapsed:.2f}s | 异常: {err_msg}")
+        log_event(f"[ERROR] [CLI:{task_id}] 执行异常 | 耗时: {elapsed:.2f}s | 异常: {err_msg}")
         sys.stderr.write(f"Error: {err_msg}\n")
         return 1
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Google Antigravity CLI (agy) - 5-Tier Resilient Engine",
+        description="Google Antigravity Official Headless CLI (agy) - Gemini 3.8 Flash",
         add_help=False
     )
     parser.add_argument("-p", "--print", dest="print_prompt", type=str, default=None,
                         help="Non-interactive mode: run prompt, print response, exit")
     parser.add_argument("--print-timeout", dest="timeout", type=str, default="10m",
                         help="Timeout for print mode (e.g. 5m, 10m, 300s)")
+    parser.add_argument("--model", dest="model", type=str, default="flash",
+                        help="Antigravity model tier: flash (Gemini 3.8 Flash), pro, or flash_lite")
     parser.add_argument("--dangerously-skip-permissions", dest="skip_perm", action="store_true",
                         help="Auto-approve all tool calls (compatibility flag)")
     parser.add_argument("--add-dir", dest="add_dir", action="append", default=[],
@@ -164,8 +279,8 @@ def main():
             prompt = sys.stdin.read().strip()
 
     if not prompt:
-        print("Google Antigravity CLI (agy) v2.5 - 5-Tier Resilient Engine")
-        print("Usage: agy -p \"YOUR PROMPT HERE\" [--print-timeout 10m] [--add-dir /path]")
+        print("Google Antigravity Official Headless CLI (agy) v3.0 - Gemini 3.8 Flash")
+        print("Usage: agy -p \"YOUR PROMPT HERE\" [--print-timeout 10m] [--model flash] [--add-dir /path]")
         sys.exit(1)
 
     workspace = os.getcwd()
@@ -173,7 +288,7 @@ def main():
         workspace = os.path.abspath(args.add_dir[0])
 
     timeout_sec = parse_timeout(args.timeout)
-    code = asyncio.run(run_cli(prompt, workspace, timeout_sec))
+    code = asyncio.run(run_cli(prompt, workspace, args.model, timeout_sec))
     sys.exit(code)
 
 
