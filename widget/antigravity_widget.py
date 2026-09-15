@@ -77,7 +77,7 @@ COLOR_TEAL = "#94e2d5"      # Teal for architecture
 
 SCALE_STEPS = [0.9, 1.0, 1.15, 1.3, 1.5, 1.75, 2.0]
 DEFAULT_SCALE_INDEX = 2  # 1.15x by default
-OPACITY_PRESETS = [0.85, 0.70, 1.0]
+OPACITY_PRESETS = [0.65, 0.50, 0.75, 0.85, 1.0]  # 默认更高透明度档位 (65%/50%/75%/85%/100%)
 
 
 # ---------------------------------------------------------------------------
@@ -636,10 +636,10 @@ class AntigravityWidget:
             self.scale_idx = DEFAULT_SCALE_INDEX
         self.font_scale = SCALE_STEPS[self.scale_idx]
 
-        # Smart Hover Transparency settings
-        self.base_alpha = float(self.config.get("base_alpha", 0.85))
+        # Smart Hover Transparency settings (默认更高透明度 0.65)
+        self.base_alpha = float(self.config.get("base_alpha", 0.65))
         if self.base_alpha not in OPACITY_PRESETS:
-            self.base_alpha = 0.85
+            self.base_alpha = 0.65
 
         # Base dimensions
         self.base_width = 380
@@ -708,7 +708,7 @@ class AntigravityWidget:
                     return json.load(f)
             except Exception:
                 pass
-        return {"scale_index": DEFAULT_SCALE_INDEX, "base_alpha": 0.85}
+        return {"scale_index": DEFAULT_SCALE_INDEX, "base_alpha": 0.65}
 
     def save_config(self):
         try:
@@ -726,8 +726,9 @@ class AntigravityWidget:
     # -----------------------------------------------------------------------
 
     def on_hover_enter(self, event):
-        """鼠标悬停唤醒：瞬间提高透明度至 0.98，并激活全域鼠标滚轮监听"""
-        self.root.attributes("-alpha", 0.98)
+        """鼠标悬停唤醒：适度提高清晰度，并激活全域鼠标滚轮监听"""
+        hover_alpha = min(0.92, max(0.82, self.base_alpha + 0.20))
+        self.root.attributes("-alpha", hover_alpha)
         self.root.bind_all("<MouseWheel>", self.on_panel_mousewheel)
 
     def on_hover_leave(self, event):
