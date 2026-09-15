@@ -295,7 +295,7 @@ async def _execute_antigravity_core(
                 _save_task_record(rec)
         return await run_official_headless(
             prompt=prompt,
-            workspace=workspace,
+            workspace=ws,
             model="flash",
             timeout_sec=600.0,
             task_id=task_id or f"mcp-{uuid.uuid4().hex[:4]}"

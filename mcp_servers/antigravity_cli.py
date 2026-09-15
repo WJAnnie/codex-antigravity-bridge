@@ -3,11 +3,12 @@ Google Antigravity Official Headless CLI (agy)
 Native CLI runner backed by the official Antigravity engine (Gemini 3.8 Flash).
 Authenticates via official Google Antigravity account (OAuth / ~/.gemini/oauth_creds.json).
 Zero external API key quota constraints. Full tool execution capabilities.
-Compatible with Codex `call-agy`, claudecode, and command-line execution.
+Features automatic Language Server endpoint discovery for standalone shells & Codex subagents.
 """
 
 import sys
 import os
+import re
 import shutil
 import argparse
 import asyncio
@@ -15,6 +16,7 @@ import time
 import json
 import uuid
 import subprocess
+import urllib.request
 
 # 强制标准输入输出为 UTF-8 编码，防止 Windows 终端中文乱码
 if hasattr(sys.stdout, "reconfigure"):
@@ -37,6 +39,55 @@ except Exception:
 LS_BINARY = r"C:\Users\Administrator\AppData\Local\Programs\Antigravity\resources\bin\language_server.exe"
 AGENTAPI_BAT = os.path.expanduser(r"~/.gemini/antigravity/bin/agentapi.bat")
 BRAIN_DIR = os.path.expanduser(r"~/.gemini/antigravity/brain")
+
+
+def discover_antigravity_env() -> dict[str, str]:
+    """Auto-discovers running Antigravity Language Server address & CSRF token if not in env."""
+    env = dict(os.environ)
+    if env.get("ANTIGRAVITY_LS_ADDRESS") and env.get("ANTIGRAVITY_CSRF_TOKEN"):
+        return env
+
+    try:
+        # Find language_server.exe process
+        ps_cmd = "Get-CimInstance Win32_Process -Filter \"Name = 'language_server.exe'\" | Select-Object ProcessId, CommandLine | ConvertTo-Json"
+        res = subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, text=True)
+        if not res.stdout.strip():
+            return env
+
+        data = json.loads(res.stdout)
+        if isinstance(data, list):
+            data = data[0]
+
+        pid = data.get("ProcessId")
+        cmdline = data.get("CommandLine", "")
+        csrf_match = re.search(r'--csrf_token\s+([a-f0-9\-]+)', cmdline)
+        if not csrf_match:
+            return env
+        csrf = csrf_match.group(1)
+
+        # Query listening ports
+        port_cmd = f"Get-NetTCPConnection -OwningProcess {pid} -State Listen | Select-Object -ExpandProperty LocalPort"
+        res_port = subprocess.run(["powershell", "-NoProfile", "-Command", port_cmd], capture_output=True, text=True)
+        ports = [int(p.strip()) for p in res_port.stdout.strip().splitlines() if p.strip().isdigit()]
+
+        http_port = None
+        for port in ports:
+            try:
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/", headers={"x-csrf-token": csrf})
+                with urllib.request.urlopen(req, timeout=1) as resp:
+                    if resp.status == 200:
+                        http_port = port
+                        break
+            except Exception:
+                pass
+
+        if http_port and csrf:
+            env["ANTIGRAVITY_LS_ADDRESS"] = f"localhost:{http_port}"
+            env["ANTIGRAVITY_CSRF_TOKEN"] = csrf
+    except Exception:
+        pass
+
+    return env
 
 
 def get_agentapi_cmd() -> list[str]:
@@ -73,23 +124,25 @@ async def run_official_headless(prompt: str, workspace: str, model: str, timeout
     """
     cmd_prefix = get_agentapi_cmd()
     launch_cmd = cmd_prefix + ["new-conversation", f"--model={model}", prompt]
-    
+    run_env = discover_antigravity_env()
+
     log_event(f"[START] [CLI:{task_id}] 启动官方 Antigravity Headless 引擎 (模型: {model}) | 工作区: {workspace}")
-    
-    # Run agentapi new-conversation in the target workspace directory
+
+    # Run agentapi new-conversation in the target workspace directory with auto-discovered environment
     proc = await asyncio.to_thread(
         subprocess.run,
         launch_cmd,
         cwd=workspace,
+        env=run_env,
         capture_output=True,
         text=True,
         encoding="utf-8"
     )
-    
+
     if proc.returncode != 0:
         err_detail = proc.stderr.strip() or proc.stdout.strip()
         raise RuntimeError(f"agentapi new-conversation failed (code {proc.returncode}): {err_detail}")
-    
+
     try:
         data = json.loads(proc.stdout)
         cid = data["response"]["newConversation"]["conversationId"]
@@ -159,7 +212,7 @@ async def run_official_headless(prompt: str, workspace: str, model: str, timeout
 async def run_cli(prompt: str, workspace: str, model: str, timeout_sec: float) -> int:
     task_id = f"cli-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
     start_time = time.time()
-    
+
     # Save initial task record for desktop widget display
     record = {
         "task_id": task_id,
@@ -184,7 +237,7 @@ async def run_cli(prompt: str, workspace: str, model: str, timeout_sec: float) -
             task_id=task_id
         )
         elapsed = time.time() - start_time
-        
+
         # Save markdown report
         try:
             os.makedirs(os.path.dirname(record["report_file"]), exist_ok=True)
@@ -199,7 +252,7 @@ async def run_cli(prompt: str, workspace: str, model: str, timeout_sec: float) -
                          f"## 📋 Output\n\n{result_text}\n")
         except Exception:
             pass
-        
+
         record["status"] = "COMPLETED"
         record["end_time"] = time.time()
         record["elapsed_sec"] = elapsed
