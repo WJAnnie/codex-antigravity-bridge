@@ -471,6 +471,7 @@ async def _run_async_worker(
     record = _load_task_record(task_id) or {}
     record["status"] = "RUNNING"
     record["start_time"] = start_time
+    record["worker_pid"] = os.getpid()
     _save_task_record(record)
 
     prompt_summary = prompt.replace("\n", " ").strip()
@@ -478,7 +479,7 @@ async def _run_async_worker(
         prompt_summary = prompt_summary[:50] + "..."
 
     engine_name = get_engine_name()
-    log_event(f"[START] [ASYNC:{task_id}] 触发任务: {task_type} | 引擎: {engine_name} | 工作区: {ws} | 任务: {prompt_summary}")
+    log_event(f"[START] [ASYNC:{task_id}] 触发任务: call-agy ({task_type}) | 引擎: {engine_name} | 工作区: {ws} | 任务: {prompt_summary}")
 
     try:
         result_text = await _execute_antigravity_core(prompt, ws, system_instructions, task_id=task_id)
@@ -1066,8 +1067,24 @@ async def list_antigravity_tasks(limit: int = 5) -> str:
     return "\n".join(lines)
 
 
+def _is_pid_alive(pid: Optional[int]) -> bool:
+    """利用 Windows kernel32 精准探测对应 Worker 进程是否依然在活跃运行"""
+    if not pid:
+        return False
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        h = kernel32.OpenProcess(0x0400, False, pid)
+        if h:
+            kernel32.CloseHandle(h)
+            return True
+        return False
+    except Exception:
+        return False
+
+
 def _sweep_orphan_tasks() -> None:
-    """服务启动时扫描并收敛历史遗留的僵尸任务"""
+    """服务启动时扫描并收敛历史遗留的僵尸任务（绝不误杀真实运行中的长任务）"""
     if not os.path.exists(TASKS_DIR):
         return
     now = time.time()
@@ -1078,10 +1095,15 @@ def _sweep_orphan_tasks() -> None:
                 with open(pf, "r", encoding="utf-8") as rf:
                     rec = json.load(rf)
                 if rec.get("status") in ("RUNNING", "PENDING"):
+                    w_pid = rec.get("worker_pid")
                     st = rec.get("start_time", 0)
-                    if now - st > 300:
+                    # 只要对应的 Worker 进程仍在活跃运行，坚决不打扰！
+                    if w_pid and _is_pid_alive(w_pid):
+                        continue
+                    # 仅在进程已死且耗时超过 30 分钟时，才安全纠偏为 INTERRUPTED
+                    if (w_pid and not _is_pid_alive(w_pid)) or (now - st > 1800):
                         rec["status"] = "INTERRUPTED"
-                        rec["status_detail"] = "服务重启或上一会话结束，已自动标记中止"
+                        rec["status_detail"] = "关联进程已退出，任务已自动收敛"
                         with open(pf, "w", encoding="utf-8") as wf:
                             json.dump(rec, wf, ensure_ascii=False, indent=2)
             except Exception:

@@ -1251,19 +1251,31 @@ class AntigravityWidget:
                 summary = rec.get("prompt_summary", "")
                 created = rec.get("created_at", "")
 
-                # 孤儿任务/超时状态自愈清理：
-                # 如果状态为 RUNNING/PENDING，但已经过去了超过 10 分钟（600秒），
-                # 说明对应的 Python 进程早在之前 Codex 会话结束或中断时终止，自动纠正为 INTERRUPTED
+                # 孤儿任务/超时状态自愈清理（必须先确认进程是否真的已死，绝不误杀真实运行中的长任务）：
                 if status in ("RUNNING", "PENDING"):
-                    if start_time and (time.time() - start_time > 600):
-                        status = "INTERRUPTED"
-                        rec["status"] = "INTERRUPTED"
-                        rec["status_detail"] = "会话已结束或进程已退出，任务已自动收敛终止"
+                    w_pid = rec.get("worker_pid")
+                    is_alive = False
+                    if w_pid:
                         try:
-                            with open(pf, "w", encoding="utf-8") as wf:
-                                json.dump(rec, wf, ensure_ascii=False, indent=2)
+                            import ctypes
+                            h = ctypes.windll.kernel32.OpenProcess(0x0400, False, int(w_pid))
+                            if h:
+                                ctypes.windll.kernel32.CloseHandle(h)
+                                is_alive = True
                         except Exception:
                             pass
+                    
+                    if not is_alive:
+                        # 仅在进程已死且耗时超过 30 分钟（1800秒），或者进程不存在时，才标记中止
+                        if (start_time and (time.time() - start_time > 1800)) or (w_pid and not is_alive):
+                            status = "INTERRUPTED"
+                            rec["status"] = "INTERRUPTED"
+                            rec["status_detail"] = "关联进程已退出，任务已自动收敛"
+                            try:
+                                with open(pf, "w", encoding="utf-8") as wf:
+                                    json.dump(rec, wf, ensure_ascii=False, indent=2)
+                            except Exception:
+                                pass
 
                 if rep and not os.path.isabs(rep) and ws:
                     rep = os.path.abspath(os.path.join(ws, rep))
