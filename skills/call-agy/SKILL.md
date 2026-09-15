@@ -1,6 +1,6 @@
 ---
 name: call-agy
-description: "Delegate heavy, multi-step, deep codebase research, or second-opinion code review to Google Antigravity via agy CLI or MCP"
+description: "TOP-PRIORITY DEFAULT DELEGATION. Automatically active by default for all code reviews, security audits, architecture investigations, bulk test generation, and complex multi-file tasks. No need for the user to explicitly mention call-agy or antigravity in the prompt."
 ---
 
 # Call Antigravity (call-agy)
