@@ -1,6 +1,6 @@
 ---
 name: call-agy
-description: "TOP-PRIORITY DEFAULT DELEGATION. Automatically active by default for all code reviews, security audits, architecture investigations, bulk test generation, and complex multi-file tasks. No need for the user to explicitly mention call-agy or antigravity in the prompt."
+description: "TOP-PRIORITY DEFAULT DELEGATION (Tier 1 via agy CLI). Automatically active by default for all code reviews, security audits, architecture investigations, bulk test generation, and complex multi-file tasks. Uses native CLI 'agy -p' as Tier 1 preferred channel. No need for user to explicitly mention call-agy or antigravity in the prompt."
 ---
 
 # Call Antigravity (call-agy)
@@ -22,25 +22,23 @@ Delegate complex, multi-file, or long-running tasks to Google Antigravity to lev
 
 ## Execution Methods
 
-### Method 1: Preferred FastMCP Tool (Recommended)
-When MCP server is available, invoke `ask_antigravity` or `antigravity_code_review`:
-- **Auto-detach protection**: Automatically decouples long-running jobs (>180s) to background, completely preventing the client 300s timeout.
-- **5-Tier Resilient Engine**: Cascades across Google Gemini, GPT-5.6-Sol, DeepSeek-V4, and GLM-5.3.
-- **Live Desktop Widget**: Real-time timer, status cards, and one-click Markdown preview.
-- **Artifact Generation**: Full reports automatically archived to `<workspace>/.antigravity_reports/`.
-
-### Method 2: Local CLI Execution (`agy -p`)
-You can run Antigravity directly via the native terminal command:
+### Method 1: Tier 1 首选通道 - 本地命令行调用 (`agy -p`) (Preferred)
+通过原生终端命令直接调用 Antigravity，标准输出直出纯净 Markdown，底层由高可用中继集群（GPT-5.6-Sol / DeepSeek-V4 / GLM-5.3）强力驱动，**彻底根除 Google 原生 API 每日 20 次的极低额度瓶颈**，零等待、零 429 报错：
 
 ```bash
 agy -p "{{ARGUMENTS}}" --dangerously-skip-permissions --print-timeout 10m
 ```
 
-**Key Flags:**
-- `-p "prompt"` / `--print "prompt"`: Non-interactive execution, prints final result to stdout and exits.
-- `--dangerously-skip-permissions`: Auto-approves file and command execution permissions.
-- `--print-timeout 10m`: Specifies the timeout limit.
-- `--add-dir <path>`: Explicitly scopes the working directory.
+**关键参数：**
+- `-p "prompt"` / `--print "prompt"`: 非交互式运行，执行完毕直接将纯净 Markdown 结果输出至 stdout 并退出。
+- `--dangerously-skip-permissions`: 自动允许文件读写与命令执行权限。
+- `--print-timeout 10m`: 设置超时限制（支持 `5m`, `10m`, `300s`）。
+- `--add-dir <path>`: 指定工作区绝对路径。
+
+### Method 2: Tier 2 备用通道 - FastMCP 工具 (`ask_antigravity`)
+当需要超长任务（>180s）后台异步脱机托管、通过桌面悬浮小组件实时查看进度、或者在 MCP 环境中结构化调用时使用：
+- 调用 `ask_antigravity` 或 `antigravity_code_review`；
+- 内置 180s 自动脱机保护与网络自愈重试，完整 Markdown 报告自动归档至 `<workspace>/.antigravity_reports/`。
 
 ## Prompt Engineering Template for Delegation
 

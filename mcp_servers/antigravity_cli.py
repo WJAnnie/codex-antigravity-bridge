@@ -11,10 +11,32 @@ import argparse
 import asyncio
 import time
 import uuid
+import logging
+
+# 强制标准输入输出为 UTF-8 编码，防止 Windows 终端中文乱码
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 # Add current directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from antigravity_mcp import _execute_antigravity_core, log_event, _save_task_record, get_engine_name
+
+# 彻底抑制底层的 RAW WS MSG 与上游警告噪音，保证控制台输出纯净 Markdown
+def _silence_loggers():
+    logging.root.setLevel(logging.ERROR)
+    for h in logging.root.handlers:
+        h.setLevel(logging.ERROR)
+    for _logger_name in ["google", "google.antigravity", "websockets", "urllib3", "root", "asyncio"]:
+        lg = logging.getLogger(_logger_name)
+        lg.setLevel(logging.ERROR)
+        for h in lg.handlers:
+            h.setLevel(logging.ERROR)
+
+_silence_loggers()
 
 
 def parse_timeout(timeout_str: str) -> float:
@@ -73,8 +95,11 @@ async def run_cli(prompt: str, workspace: str, timeout_sec: float) -> int:
         _save_task_record(record)
         log_event(f"[DONE]  [CLI:{task_id}] 执行成功 | 耗时: {elapsed:.2f}s | 字符数: {len(result_text)}")
 
-        # Output to stdout directly
-        sys.stdout.write(result_text)
+        # Output to stdout directly (Unicode safe)
+        try:
+            sys.stdout.write(result_text)
+        except UnicodeEncodeError:
+            sys.stdout.buffer.write(result_text.encode(sys.stdout.encoding or "utf-8", errors="replace"))
         if not result_text.endswith("\n"):
             sys.stdout.write("\n")
         sys.stdout.flush()
