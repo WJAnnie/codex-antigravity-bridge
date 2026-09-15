@@ -282,30 +282,32 @@ async def _execute_antigravity_core(
     gemini_location_cooling = (now_ts < _gemini_location_cooling_until)
 
     # =========================================================================
-    # Tier 1 (Antigravity 原生首发): gemini-3.8-flash
-    # agy CLI / Antigravity 官方原生前沿旗舰模型，极速响应与深度推理
+    # Tier 1 (Google Antigravity 官方原生 Headless 引擎): Gemini 3.8 Flash
+    # 官方语言服务器 agentapi 原生直连，OAuth 内部官方账号，零外部 API Key 配额与 503 困扰
     # =========================================================================
-    if api_key and not gemini_38_cooling and not gemini_location_cooling:
-        try:
-            return await _try_agent_loop(_build_gemini_cfg(TIER1_MODEL), is_gemini=True, tier_name=f"Tier 1 原生 ({TIER1_MODEL})")
-        except Exception as e:
-            short_e = str(e).replace("\n", " ").strip()[:100]
-            if "429" in short_e or "quota" in short_e.lower():
-                _gemini_38_cooling_until = time.time() + 1800  # 自动进入 30 分钟配额冷却期
-                log_event(f"[FALLBACK]{tid_prefix} Tier 1 原生 ({TIER1_MODEL}) 配额耗尽 (429)，自动降级至中继梯队 ({RELAY_M2_MODEL})...")
-            elif "user location is not supported" in short_e.lower() or "location" in short_e.lower():
-                _gemini_location_cooling_until = time.time() + 3600  # 区域不支持，自动冷却 1 小时屏蔽 Google 原生
-                log_event(f"[LOCATION]{tid_prefix} Google 原生 API 处于不支持地理区域 ({short_e})，自动流转至中继梯队全面接管...")
-            else:
-                log_event(f"[FALLBACK]{tid_prefix} Tier 1 原生 ({TIER1_MODEL}) 受阻 ({short_e})，自动流转至中继梯队 ({RELAY_M2_MODEL})...")
-            if task_id:
-                rec = _load_task_record(task_id)
-                if rec:
-                    rec["status_detail"] = f"Tier 1 原生受阻，切至中继梯队"
-                    _save_task_record(rec)
-    elif gemini_38_cooling and api_key and not gemini_location_cooling:
-        remain = max(1, int((_gemini_38_cooling_until - time.time()) / 60))
-        log_event(f"[DISPATCH]{tid_prefix} Tier 1 原生 ({TIER1_MODEL}) 配额冷却中 (余 {remain} 分钟)，优先直通中继梯队...")
+    try:
+        from antigravity_cli import run_official_headless
+        log_event(f"[DISPATCH]{tid_prefix} 启动 Tier 1: 官方 Antigravity 原生 Headless (Gemini 3.8 Flash)...")
+        if task_id:
+            rec = _load_task_record(task_id)
+            if rec:
+                rec["status_detail"] = "Tier 1: 官方 Antigravity Headless (Gemini 3.8 Flash) 运行中..."
+                _save_task_record(rec)
+        return await run_official_headless(
+            prompt=prompt,
+            workspace=workspace,
+            model="flash",
+            timeout_sec=600.0,
+            task_id=task_id or f"mcp-{uuid.uuid4().hex[:4]}"
+        )
+    except Exception as e_official:
+        short_off = str(e_official).replace("\n", " ").strip()[:100]
+        log_event(f"[WARN]{tid_prefix} 官方 Headless 引擎调度异常 ({short_off})，进入备用中继梯队...")
+        if task_id:
+            rec = _load_task_record(task_id)
+            if rec:
+                rec["status_detail"] = f"官方 Headless 受阻 ({short_off})，切至中继梯队"
+                _save_task_record(rec)
 
     # =========================================================================
     # Tier 2 (本地中继高可用梯队): M1 (GPT-5.6-Sol) -> M2 (DeepSeek-V4) -> M3 (GLM-5.3)
