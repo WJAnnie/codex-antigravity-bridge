@@ -122,8 +122,14 @@ async def run_official_headless(prompt: str, workspace: str, model: str, timeout
     Spawns an official Antigravity conversation in headless mode using Gemini 3.8 Flash,
     streams tool events to the desktop widget, and returns the final result.
     """
+    # Prepend explicit workspace anchor so Antigravity agent immediately resolves relative paths
+    if workspace and os.path.exists(workspace):
+        full_prompt = f"【执行工作区根目录绝对路径】：{workspace}\n所有相对文件路径与测试命令均严格在此工作区下执行。\n\n{prompt}"
+    else:
+        full_prompt = prompt
+
     cmd_prefix = get_agentapi_cmd()
-    launch_cmd = cmd_prefix + ["new-conversation", f"--model={model}", prompt]
+    launch_cmd = cmd_prefix + ["new-conversation", f"--model={model}", full_prompt]
     run_env = discover_antigravity_env()
 
     log_event(f"[START] [CLI:{task_id}] 启动官方 Antigravity Headless 引擎 (模型: {model}) | 工作区: {workspace}")
