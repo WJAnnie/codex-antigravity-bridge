@@ -137,6 +137,40 @@ def discover_antigravity_env() -> dict[str, str]:
     env["NO_PROXY"] = "*"
     env["no_proxy"] = "*"
 
+    # 4. Auto-discover ANTIGRAVITY_PROJECT_ID (strictly required by language_server.exe for project_env_config)
+    if not (env.get("ANTIGRAVITY_PROJECT_ID") or "").strip():
+        proj_id = None
+        # Fast query from conversation_summaries.db (<1ms)
+        try:
+            import sqlite3
+            db_path = os.path.expanduser(r"~/.gemini/antigravity/conversation_summaries.db")
+            if os.path.exists(db_path):
+                conn = sqlite3.connect(db_path)
+                cur = conn.cursor()
+                cur.execute("SELECT project_id FROM conversation_summaries WHERE project_id != '' ORDER BY last_modified_time DESC LIMIT 1")
+                row = cur.fetchone()
+                conn.close()
+                if row and row[0]:
+                    proj_id = row[0].strip()
+        except Exception:
+            pass
+
+        # Fallback to app_storage.json
+        if not proj_id:
+            try:
+                app_storage_path = os.path.expanduser(r"~/AppData/Roaming/Antigravity/app_storage.json")
+                if os.path.exists(app_storage_path):
+                    with open(app_storage_path, "r", encoding="utf-8") as f:
+                        s_data = json.load(f)
+                    sidebar = s_data.get("sidebar_section_display", "")
+                    m = re.search(r'([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})', sidebar)
+                    if m:
+                        proj_id = m.group(1).strip()
+            except Exception:
+                pass
+
+        env["ANTIGRAVITY_PROJECT_ID"] = proj_id or "a99a9a2c-9314-46f3-aca9-1b63db014e3b"
+
     return env
 
 

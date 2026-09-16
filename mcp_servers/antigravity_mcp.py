@@ -276,7 +276,7 @@ async def _execute_antigravity_core(
                 raise last_err
 
     tid_prefix = f" [ASYNC:{task_id}]" if task_id else ""
-    global _gemini_38_cooling_until, _gemini_location_cooling_until, _gpt56_sol_cooling_until
+    global _gemini_38_cooling_until, _gemini_location_cooling_until, _gpt56_sol_cooling_until, _gemini_25_cooling_until
     now_ts = time.time()
     gemini_38_cooling = (now_ts < _gemini_38_cooling_until)
     gemini_location_cooling = (now_ts < _gemini_location_cooling_until)
@@ -301,7 +301,7 @@ async def _execute_antigravity_core(
             task_id=task_id or f"mcp-{uuid.uuid4().hex[:4]}"
         )
     except Exception as e_official:
-        short_off = str(e_official).replace("\n", " ").strip()[:100]
+        short_off = str(e_official).replace("\n", " ").strip()[:200]
         log_event(f"[WARN]{tid_prefix} 官方 Headless 引擎调度异常 ({short_off})，进入备用中继梯队...")
         if task_id:
             rec = _load_task_record(task_id)
