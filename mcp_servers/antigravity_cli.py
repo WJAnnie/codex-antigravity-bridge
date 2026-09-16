@@ -147,7 +147,7 @@ def discover_antigravity_env() -> dict[str, str]:
             if os.path.exists(db_path):
                 conn = sqlite3.connect(db_path)
                 cur = conn.cursor()
-                cur.execute("SELECT project_id FROM conversation_summaries WHERE project_id != '' ORDER BY last_modified_time DESC LIMIT 1")
+                cur.execute("SELECT project_id FROM conversation_summaries WHERE project_id != '' AND project_id != 'outside-of-project' ORDER BY last_modified_time DESC LIMIT 1")
                 row = cur.fetchone()
                 conn.close()
                 if row and row[0]:
