@@ -438,6 +438,15 @@ class MarkdownPreviewWindow:
         self.btn_max.bind("<Enter>", lambda e: self.btn_max.configure(fg=COLOR_ACCENT))
         self.btn_max.bind("<Leave>", lambda e: self.btn_max.configure(fg=TEXT_MUTED))
 
+        self.btn_min = tk.Label(
+            self.header, text="—", font=("Microsoft YaHei", 9),
+            bg=BG_HEADER, fg=TEXT_MUTED, cursor="hand2", padx=6
+        )
+        self.btn_min.pack(side="right")
+        self.btn_min.bind("<Button-1>", lambda e: self.window.iconify())
+        self.btn_min.bind("<Enter>", lambda e: self.btn_min.configure(fg=COLOR_ACCENT))
+        self.btn_min.bind("<Leave>", lambda e: self.btn_min.configure(fg=TEXT_MUTED))
+
         self.btn_open_ext = tk.Label(
             self.header, text="在外部编辑器打开 ↗", font=("Microsoft YaHei", 8),
             bg=BG_BTN, fg=TEXT_PRIMARY, cursor="hand2", padx=6, pady=2
@@ -648,6 +657,9 @@ class AntigravityWidget:
         self.custom_expanded_h = None
         self.is_expanded = False
         self.is_topmost = True
+        self.is_minimized = False
+        self.is_mini_mode = False
+        self.saved_geometry = None
         self.active_tab = "cards"  # 'cards' | 'logs'
 
         # Window setup with 1px micro-border
@@ -700,6 +712,9 @@ class AntigravityWidget:
         # Smart Dynamic Hover Transparency (移入 0.98 清晰，移出恢复 base_alpha)
         self.root.bind("<Enter>", self.on_hover_enter)
         self.root.bind("<Leave>", self.on_hover_leave)
+
+        # Windows Taskbar Restore Mapping
+        self.root.bind("<Map>", self.on_window_map)
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -788,6 +803,7 @@ class AntigravityWidget:
 
         self.header.bind("<ButtonPress-1>", self.start_drag)
         self.header.bind("<B1-Motion>", self.do_drag)
+        self.header.bind("<Double-Button-1>", self.toggle_mini_mode)
 
         self.title_lbl = tk.Label(
             self.header,
@@ -800,6 +816,7 @@ class AntigravityWidget:
         self.title_lbl.pack(side="left", padx=6, pady=3)
         self.title_lbl.bind("<ButtonPress-1>", self.start_drag)
         self.title_lbl.bind("<B1-Motion>", self.do_drag)
+        self.title_lbl.bind("<Double-Button-1>", self.toggle_mini_mode)
 
         # Header buttons (Right to Left)
         self.btn_close = tk.Label(
@@ -808,8 +825,19 @@ class AntigravityWidget:
         )
         self.btn_close.pack(side="right")
         self.btn_close.bind("<Button-1>", lambda e: self.root.destroy())
-        self.btn_close.bind("<Enter>", lambda e: self.btn_close.configure(fg=COLOR_ERR, bg=BG_HOVER))
+        self.btn_close.bind("<Enter>", lambda e: self.btn_close.configure(fg=COLOR_ERR, bg=BG_BTN_HOVER))
         self.btn_close.bind("<Leave>", lambda e: self.btn_close.configure(fg=TEXT_MUTED, bg=BG_HEADER))
+
+        # 最小化按钮 (—): 左键最小化到任务栏，右键折叠为微型悬浮胶囊
+        self.btn_min = tk.Label(
+            self.header, text="—", font=("Microsoft YaHei", 9),
+            bg=BG_HEADER, fg=TEXT_MUTED, cursor="hand2", padx=6
+        )
+        self.btn_min.pack(side="right")
+        self.btn_min.bind("<Button-1>", self.minimize_window)
+        self.btn_min.bind("<Button-3>", self.toggle_mini_mode)
+        self.btn_min.bind("<Enter>", lambda e: self.btn_min.configure(fg=COLOR_ACCENT, bg=BG_BTN_HOVER))
+        self.btn_min.bind("<Leave>", lambda e: self.btn_min.configure(fg=TEXT_MUTED, bg=BG_HEADER))
 
         self.btn_pin = tk.Label(
             self.header, text="📌", font=("Microsoft YaHei", 9),
@@ -1057,6 +1085,7 @@ class AntigravityWidget:
         # Update fonts
         self.title_lbl.configure(font=("Microsoft YaHei", max(8, int(9 * s)), "bold"))
         self.btn_close.configure(font=("Microsoft YaHei", max(8, int(9 * s))))
+        self.btn_min.configure(font=("Microsoft YaHei", max(8, int(9 * s))))
         self.btn_pin.configure(font=("Microsoft YaHei", max(8, int(9 * s))))
         self.btn_opacity.configure(font=("Microsoft YaHei", max(7, int(7.5 * s))))
         self.btn_reset.configure(font=("Microsoft YaHei", max(7, int(8 * s))))
@@ -1079,7 +1108,10 @@ class AntigravityWidget:
         cur_x = self.root.winfo_x()
         cur_y = self.root.winfo_y()
         w = int(self.base_width * s)
-        target_h = (self.custom_expanded_h or int(self.base_height_expanded * s)) if self.is_expanded else int(self.base_height_compact * s)
+        if self.is_mini_mode:
+            target_h = max(28, int(32 * s))
+        else:
+            target_h = (self.custom_expanded_h or int(self.base_height_expanded * s)) if self.is_expanded else int(self.base_height_compact * s)
         self.header.configure(height=max(28, int(32 * s)))
         self.root.geometry(f"{w}x{target_h}+{cur_x}+{cur_y}")
 
@@ -1105,7 +1137,77 @@ class AntigravityWidget:
         self.root.attributes("-topmost", self.is_topmost)
         self.btn_pin.configure(fg=COLOR_ACCENT if self.is_topmost else TEXT_MUTED)
 
+    def minimize_window(self, event=None):
+        """
+        最小化监控窗口到 Windows 任务栏。
+        保存无边框状态下的坐标与尺寸，解除 overrideredirect 限制后调用 iconify() 压入任务栏。
+        用户点击任务栏还原时，由 on_window_map 自动恢复无边框、微光边框与置顶样式。
+        """
+        try:
+            self.saved_geometry = (
+                self.root.winfo_x(),
+                self.root.winfo_y(),
+                self.root.winfo_width(),
+                self.root.winfo_height()
+            )
+            self.is_minimized = True
+            self.root.overrideredirect(False)
+            self.root.iconify()
+        except Exception as e:
+            sys.stderr.write(f"[Minimize Error] {e}\n")
+
+    def on_window_map(self, event):
+        """处理任务栏点击恢复事件"""
+        if event.widget == self.root and self.is_minimized:
+            self.root.after_idle(self._restore_from_minimized)
+
+    def _restore_from_minimized(self):
+        try:
+            self.is_minimized = False
+            self.root.overrideredirect(True)
+            if self.saved_geometry:
+                x, y, w, h = self.saved_geometry
+                self.root.geometry(f"{w}x{h}+{x}+{y}")
+            self.root.attributes("-topmost", self.is_topmost)
+            self.root.attributes("-alpha", self.base_alpha)
+            self.root.lift()
+        except Exception as e:
+            sys.stderr.write(f"[Restore Error] {e}\n")
+
+    def toggle_mini_mode(self, event=None):
+        """在完整监控面板与极简微型悬浮条之间快速切换（双击标题栏或右击最小化按钮）"""
+        s = self.font_scale
+        cur_x = self.root.winfo_x()
+        cur_y = self.root.winfo_y()
+        w = int(self.base_width * s)
+
+        if self.is_mini_mode:
+            # 恢复常规面板
+            self.is_mini_mode = False
+            self.body.pack(fill="x", expand=False)
+            if self.is_expanded:
+                self.history_frame.pack(fill="both", expand=True, side="bottom")
+                target_h = self.custom_expanded_h or int(self.base_height_expanded * s)
+            else:
+                target_h = int(self.base_height_compact * s)
+            self.root.geometry(f"{w}x{target_h}+{cur_x}+{cur_y}")
+            self.title_lbl.configure(text=" 🤖 Antigravity 监控")
+        else:
+            # 折叠为微型悬浮胶囊状态条 (32px)
+            self.is_mini_mode = True
+            if self.is_expanded:
+                self.history_frame.pack_forget()
+            self.body.pack_forget()
+            h = max(28, int(32 * s))
+            self.root.geometry(f"{w}x{h}+{cur_x}+{cur_y}")
+            st_text = self.status_text.cget("text")
+            tm_text = self.timer_label.cget("text")
+            pill_status = f" 🤖 [{st_text}] {tm_text}".strip()
+            self.title_lbl.configure(text=pill_status)
+
     def toggle_expand(self, event=None):
+        if self.is_mini_mode:
+            self.toggle_mini_mode()
         self.is_expanded = not self.is_expanded
         s = self.font_scale
         w = int(self.base_width * s)
@@ -1657,6 +1759,13 @@ class AntigravityWidget:
             self.status_dot.configure(fg=pulse_colors[self.pulse_phase])
         elif self.current_state == "IDLE":
             self.status_dot.configure(fg=COLOR_IDLE)
+
+        # 在微型胶囊模式下同步标题栏状态与计时
+        if self.is_mini_mode:
+            st_text = self.status_text.cget("text")
+            tm_text = self.timer_label.cget("text")
+            pill_status = f" 🤖 [{st_text}] {tm_text}".strip()
+            self.title_lbl.configure(text=pill_status)
 
         self.root.after(250, self.update_breathing_and_timer)
 
