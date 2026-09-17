@@ -84,6 +84,31 @@ OPACITY_PRESETS = [0.65, 0.50, 0.75, 0.85, 1.0]  # 默认更高透明度档位 (
 # Utility Functions
 # ---------------------------------------------------------------------------
 
+def is_pid_running(pid: int) -> bool:
+    """利用 Windows kernel32 精准判断指定 PID 是否依然在活跃运行"""
+    if not pid:
+        return False
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        # SYNCHRONIZE (0x00100000) | PROCESS_QUERY_LIMITED_INFORMATION (0x1000)
+        h = kernel32.OpenProcess(0x00101000, False, int(pid))
+        if not h:
+            return False
+        try:
+            res = kernel32.WaitForSingleObject(h, 0)
+            if res == 258:  # WAIT_TIMEOUT -> 进程依然活跃运行中
+                return True
+            code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(h, ctypes.byref(code)):
+                return code.value == 259  # STILL_ACTIVE
+            return False
+        finally:
+            kernel32.CloseHandle(h)
+    except Exception:
+        return False
+
+
 def open_report_file(file_path: str) -> bool:
     """在系统默认编辑器中打开报告（如 VS Code / Typora / Notepad 等）"""
     if not file_path:
@@ -694,7 +719,8 @@ class AntigravityWidget:
         self.current_state = "IDLE"  # IDLE | BUSY | RETRY | ERROR
         self.start_timestamp = 0.0
         self.last_log_mtime = 0.0
-        self.last_tasks_mtime = 0.0
+        self.last_tasks_sig = (0, 0.0)
+        self._last_busy_check = 0.0
         self.last_notified_task_id = None
         self.pulse_phase = 0
         self.pulse_timer_active = False
@@ -1305,10 +1331,22 @@ class AntigravityWidget:
         try:
             tasks_updated = False
             if os.path.exists(TASKS_DIR):
-                mtime = os.path.getmtime(TASKS_DIR)
-                if mtime != self.last_tasks_mtime:
-                    self.last_tasks_mtime = mtime
-                    tasks_updated = True
+                latest_mtime = 0.0
+                file_count = 0
+                try:
+                    with os.scandir(TASKS_DIR) as it:
+                        for entry in it:
+                            if entry.name.endswith(".json") and entry.is_file():
+                                file_count += 1
+                                st = entry.stat()
+                                if st.st_mtime > latest_mtime:
+                                    latest_mtime = st.st_mtime
+                    sig = (file_count, latest_mtime)
+                    if sig != self.last_tasks_sig:
+                        self.last_tasks_sig = sig
+                        tasks_updated = True
+                except Exception:
+                    pass
 
             log_updated = False
             if os.path.exists(LOG_FILE):
@@ -1317,7 +1355,13 @@ class AntigravityWidget:
                     self.last_log_mtime = mtime
                     log_updated = True
 
-            if tasks_updated or log_updated:
+            # 运行中状态守卫：若当前处于 BUSY，至少每 2 秒主动复核一次 worker 状态，防止进程退出后界面悬挂
+            now = time.time()
+            force_busy_check = (self.current_state in ("BUSY", "RETRY") and now - self._last_busy_check >= 2.0)
+            if force_busy_check:
+                self._last_busy_check = now
+
+            if tasks_updated or log_updated or force_busy_check:
                 self.sync_with_data()
                 if self.is_expanded:
                     self.render_active_tab()
@@ -1354,29 +1398,23 @@ class AntigravityWidget:
                 summary = rec.get("prompt_summary", "")
                 created = rec.get("created_at", "")
 
-                # 孤儿任务/超时状态自愈清理（必须先确认进程是否真的已死，绝不误杀真实运行中的长任务）：
+                # 孤儿任务/超时状态自愈清理（利用 Win32 kernel32 精准探测 Worker 进程存活状态，绝不误杀真实长任务）：
                 if status in ("RUNNING", "PENDING"):
                     w_pid = rec.get("worker_pid")
-                    is_alive = False
-                    if w_pid:
-                        try:
-                            import ctypes
-                            h = ctypes.windll.kernel32.OpenProcess(0x0400, False, int(w_pid))
-                            if h:
-                                ctypes.windll.kernel32.CloseHandle(h)
-                                is_alive = True
-                        except Exception:
-                            pass
+                    is_alive = is_pid_running(w_pid) if w_pid else False
                     
                     if not is_alive:
-                        # 仅在进程已死且耗时超过 30 分钟（1800秒），或者进程不存在时，才标记中止
-                        if (start_time and (time.time() - start_time > 1800)) or (w_pid and not is_alive):
+                        # 仅在明确检测到进程已退出，或者未声明 pid 且耗时超过 30 分钟（1800秒）时，才安全纠偏为 INTERRUPTED
+                        if (w_pid and not is_alive) or (start_time and (time.time() - start_time > 1800)):
                             status = "INTERRUPTED"
                             rec["status"] = "INTERRUPTED"
                             rec["status_detail"] = "关联进程已退出，任务已自动收敛"
+                            if not rec.get("elapsed_sec") and start_time:
+                                rec["elapsed_sec"] = time.time() - start_time
                             try:
                                 with open(pf, "w", encoding="utf-8") as wf:
                                     json.dump(rec, wf, ensure_ascii=False, indent=2)
+                                os.utime(TASKS_DIR, None)
                             except Exception:
                                 pass
 
@@ -1450,7 +1488,10 @@ class AntigravityWidget:
             self.start_timestamp = 0.0
             self.status_dot.configure(fg=TEXT_MUTED)
             self.status_text.configure(text="空闲待命 (会话已收敛)", fg=TEXT_MUTED)
-            self.timer_label.configure(text="")
+            if elapsed:
+                self.timer_label.configure(text=f"已中止 ({elapsed:.0f}s)")
+            else:
+                self.timer_label.configure(text="")
         elif status == "FAILED":
             self.current_state = "ERROR"
             self.start_timestamp = 0.0
@@ -1750,7 +1791,7 @@ class AntigravityWidget:
             mins = elapsed // 60
             secs = elapsed % 60
             self.timer_label.configure(text=f"⏱ {mins:02d}:{secs:02d}")
-        elif self.current_state == "IDLE" and not self.timer_label.cget("text").startswith("耗时"):
+        elif self.current_state == "IDLE" and not self.timer_label.cget("text").startswith("耗时") and not self.timer_label.cget("text").startswith("已中止"):
             self.timer_label.configure(text="")
 
         if self.current_state in ("BUSY", "RETRY"):

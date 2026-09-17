@@ -168,8 +168,13 @@ def _get_task_file(task_id: str) -> str:
 def _save_task_record(record: Dict[str, Any]) -> None:
     task_id = record["task_id"]
     try:
+        os.makedirs(TASKS_DIR, exist_ok=True)
         with open(_get_task_file(task_id), "w", encoding="utf-8") as f:
             json.dump(record, f, ensure_ascii=False, indent=2)
+        try:
+            os.utime(TASKS_DIR, None)
+        except Exception:
+            pass
     except Exception as e:
         sys.stderr.write(f"[Task Save Error] {e}\n")
 
@@ -1087,11 +1092,20 @@ def _is_pid_alive(pid: Optional[int]) -> bool:
     try:
         import ctypes
         kernel32 = ctypes.windll.kernel32
-        h = kernel32.OpenProcess(0x0400, False, pid)
-        if h:
+        # SYNCHRONIZE (0x00100000) | PROCESS_QUERY_LIMITED_INFORMATION (0x1000)
+        h = kernel32.OpenProcess(0x00101000, False, int(pid))
+        if not h:
+            return False
+        try:
+            res = kernel32.WaitForSingleObject(h, 0)
+            if res == 258:  # WAIT_TIMEOUT -> 依然活跃运行
+                return True
+            code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(h, ctypes.byref(code)):
+                return code.value == 259  # STILL_ACTIVE
+            return False
+        finally:
             kernel32.CloseHandle(h)
-            return True
-        return False
     except Exception:
         return False
 
@@ -1113,12 +1127,18 @@ def _sweep_orphan_tasks() -> None:
                     # 只要对应的 Worker 进程仍在活跃运行，坚决不打扰！
                     if w_pid and _is_pid_alive(w_pid):
                         continue
-                    # 仅在进程已死且耗时超过 30 分钟时，才安全纠偏为 INTERRUPTED
+                    # 仅在进程已死，或者未声明 pid 且耗时超过 30 分钟时，才安全纠偏为 INTERRUPTED
                     if (w_pid and not _is_pid_alive(w_pid)) or (now - st > 1800):
                         rec["status"] = "INTERRUPTED"
                         rec["status_detail"] = "关联进程已退出，任务已自动收敛"
+                        if not rec.get("elapsed_sec") and st:
+                            rec["elapsed_sec"] = now - st
                         with open(pf, "w", encoding="utf-8") as wf:
                             json.dump(rec, wf, ensure_ascii=False, indent=2)
+                        try:
+                            os.utime(TASKS_DIR, None)
+                        except Exception:
+                            pass
             except Exception:
                 pass
 

@@ -345,6 +345,7 @@ async def run_cli(prompt: str, workspace: str, model: str, timeout_sec: float) -
         "prompt": prompt,
         "prompt_summary": prompt.replace("\n", " ").strip()[:60],
         "start_time": start_time,
+        "worker_pid": os.getpid(),
         "model": model,
         "report_file": os.path.join(workspace, ".antigravity_reports", f"{task_id}.md")
     }
