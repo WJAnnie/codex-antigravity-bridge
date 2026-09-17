@@ -204,7 +204,7 @@ def get_agentapi_cmd() -> list[str]:
 
 def parse_timeout(timeout_str: str) -> float:
     if not timeout_str:
-        return 600.0
+        return 1200.0
     timeout_str = timeout_str.strip().lower()
     try:
         if timeout_str.endswith("m") or timeout_str.endswith("m0s"):
@@ -214,7 +214,7 @@ def parse_timeout(timeout_str: str) -> float:
             return float(timeout_str[:-1])
         return float(timeout_str)
     except Exception:
-        return 600.0
+        return 1200.0
 
 
 async def run_official_headless(prompt: str, workspace: str, model: str, timeout_sec: float, task_id: str) -> str:
@@ -263,8 +263,8 @@ async def run_official_headless(prompt: str, workspace: str, model: str, timeout
 
     start_time = time.time()
     last_processed_idx = 0
+    tool_counter = 0
     final_output = ""
-    seen_tools = set()
 
     # Poll transcript until completion or timeout
     while time.time() - start_time < timeout_sec:
@@ -286,10 +286,23 @@ async def run_official_headless(prompt: str, workspace: str, model: str, timeout
 
                         if tools:
                             for t in tools:
+                                tool_counter += 1
                                 tname = t.get("name", "tool")
-                                if tname not in seen_tools:
-                                    seen_tools.add(tname)
-                                    log_event(f"[TOOL]  [CLI:{task_id}] 执行工具: {tname}")
+                                targs = t.get("arguments", {}) or t.get("args", {})
+                                arg_summary = ""
+                                if isinstance(targs, dict):
+                                    if "CommandLine" in targs:
+                                        cmd_line = targs["CommandLine"].strip().replace("\n", " ")
+                                        arg_summary = f": {cmd_line[:40]}..." if len(cmd_line) > 40 else f": {cmd_line}"
+                                    elif "TargetFile" in targs:
+                                        arg_summary = f": {os.path.basename(targs['TargetFile'])}"
+                                    elif "AbsolutePath" in targs:
+                                        arg_summary = f": {os.path.basename(targs['AbsolutePath'])}"
+                                    elif "Query" in targs:
+                                        arg_summary = f": {targs['Query'][:25]}"
+                                    elif "Pattern" in targs:
+                                        arg_summary = f": {targs['Pattern'][:25]}"
+                                log_event(f"[TOOL]  [CLI:{task_id}] [#{tool_counter}] 执行: {tname}{arg_summary}")
                         elif content and stype == "PLANNER_RESPONSE" and status == "DONE":
                             final_output = content
                     except Exception:
@@ -388,8 +401,8 @@ async def run_cli(prompt: str, workspace: str, model: str, timeout_sec: float) -
         record["elapsed_sec"] = elapsed
         record["error"] = err_msg
         _save_task_record(record)
-        log_event(f"[TIMEOUT] [CLI:{task_id}] 执行超时 | 耗时: {elapsed:.2f}s")
-        sys.stderr.write(f"Error: {err_msg}\n")
+        log_event(f"[TIMEOUT] [CLI:{task_id}] 执行超时 | 耗时: {elapsed:.2f}s | 阈值: {timeout_sec:.0f}s (大任务可指定 -t 20m 或 30m)")
+        sys.stderr.write(f"Error: {err_msg} (提示: 复杂重构与批量单测任务请指定 --print-timeout 20m 或 30m)\n")
         return 1
 
     except Exception as e:
@@ -412,8 +425,8 @@ def main():
     )
     parser.add_argument("-p", "--print", dest="print_prompt", type=str, default=None,
                         help="Non-interactive mode: run prompt, print response, exit")
-    parser.add_argument("--print-timeout", dest="timeout", type=str, default="10m",
-                        help="Timeout for print mode (e.g. 5m, 10m, 300s)")
+    parser.add_argument("--print-timeout", "--timeout", "-t", dest="timeout", type=str, default="20m",
+                        help="Timeout for print mode (e.g. 15m, 20m, 30m, default: 20m)")
     parser.add_argument("--model", dest="model", type=str, default="flash",
                         help="Antigravity model tier: flash (Gemini 3.8 Flash), pro, or flash_lite")
     parser.add_argument("--dangerously-skip-permissions", dest="skip_perm", action="store_true",
@@ -421,9 +434,14 @@ def main():
     parser.add_argument("--add-dir", dest="add_dir", action="append", default=[],
                         help="Add directory to workspace")
     parser.add_argument("-h", "--help", action="store_true", help="Show help message")
+    parser.add_argument("-v", "--version", action="store_true", help="Show version information")
     parser.add_argument("positional_prompt", nargs="*", help="Positional prompt arguments")
 
     args, remaining = parser.parse_known_args()
+
+    if args.version:
+        print("Google Antigravity Official Headless CLI (agy) v3.0 - Gemini 3.8 Flash")
+        sys.exit(0)
 
     if args.help:
         parser.print_help()
