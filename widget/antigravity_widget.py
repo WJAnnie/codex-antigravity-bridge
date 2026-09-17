@@ -270,10 +270,17 @@ def build_task_preview_markdown(t: dict) -> tuple[str, str]:
     created = t.get("created_at", "未知")
     label = t.get("task_type_label", "智能体任务")
     ws = t.get("workspace_path", "默认工作区")
-    rep = t.get("report_file", "")
     elapsed = t.get("elapsed_sec")
-    elapsed_str = f"{elapsed:.1f} 秒" if elapsed else "持续执行中..."
-    summary = t.get("prompt_summary", "")
+    if elapsed:
+        elapsed_str = f"{elapsed:.1f} 秒"
+    elif status == "INTERRUPTED":
+        elapsed_str = "已中止"
+    elif status == "FAILED":
+        elapsed_str = "已异常中断"
+    elif status == "COMPLETED":
+        elapsed_str = "已完成"
+    else:
+        elapsed_str = "持续执行中..."
     detail = t.get("status_detail", "")
     last_err = t.get("last_error", "")
     prompt = t.get("prompt", "")
