@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Codex Antigravity Bridge 一键安装脚本
 .DESCRIPTION
@@ -53,14 +53,26 @@ $scriptRoot = $PSScriptRoot
 if (-not $scriptRoot) { $scriptRoot = Get-Location }
 
 $mcpSrc = Join-Path $scriptRoot "mcp_servers\antigravity_mcp.py"
+$cliSrc = Join-Path $scriptRoot "mcp_servers\antigravity_cli.py"
 $widgetSrc = Join-Path $scriptRoot "widget\antigravity_widget.py"
 $agentSrc = Join-Path $scriptRoot "agents\antigravity.toml"
 $launcherSrc = Join-Path $scriptRoot "launcher\启动Antigravity监控窗.bat"
+$cmdSrc = Join-Path $scriptRoot "bin\agy.cmd"
+$geminiBinDir = Join-Path $homeDir ".gemini\antigravity\bin"
 
 Copy-Item -Path $mcpSrc -Destination (Join-Path $mcpDir "antigravity_mcp.py") -Force
+Copy-Item -Path $cliSrc -Destination (Join-Path $mcpDir "antigravity_cli.py") -Force
 Copy-Item -Path $widgetSrc -Destination (Join-Path $mcpDir "antigravity_widget.py") -Force
 Copy-Item -Path $agentSrc -Destination (Join-Path $agentsDir "antigravity.toml") -Force
+
+if (Test-Path $cmdSrc) {
+    if (-not (Test-Path $geminiBinDir)) { New-Item -ItemType Directory -Force -Path $geminiBinDir | Out-Null }
+    Copy-Item -Path $cmdSrc -Destination (Join-Path $geminiBinDir "agy.cmd") -Force
+    Write-Host "  ✔ agy.cmd -> $geminiBinDir" -ForegroundColor Green
+}
+
 Write-Host "  ✔ antigravity_mcp.py -> $mcpDir" -ForegroundColor Green
+Write-Host "  ✔ antigravity_cli.py -> $mcpDir" -ForegroundColor Green
 Write-Host "  ✔ antigravity_widget.py -> $mcpDir" -ForegroundColor Green
 Write-Host "  ✔ antigravity.toml -> $agentsDir" -ForegroundColor Green
 
