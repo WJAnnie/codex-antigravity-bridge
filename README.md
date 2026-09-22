@@ -55,7 +55,8 @@ flowchart TD
 
 ### 通道一：官方 Headless CLI (`agy CLI`)
 - **零 Key、零额度限制**：基于官方 Antigravity Headless 接口（`language_server.exe agentapi new-conversation --model=flash`），依托本地官方账号会话，由 **Gemini 3.8 Flash 原生驱动**，完全不消耗第三方 API 费用。
-- **15ms 极速环境嗅探**：内置 `discover_antigravity_env()`，毫秒级探测运行中的 Antigravity 语言服务器端口与 CSRF Token，自动剥离外层 HTTP 代理，确保本地 gRPC 握手直连。
+- **15ms 极速环境嗅探与自动唤醒 (Auto-Bootstrap)**：内置 `discover_antigravity_env()`，毫秒级探测运行中的 Antigravity 语言服务器端口与 CSRF Token；若客户端未运行，**自动静默拉起 Antigravity 桌面端并轮询健康就绪（上限 30s）**，彻底告别“未检测到运行中的 language_server.exe”引发的误判与中断。严格剥离外层 HTTP 代理，确保本地 gRPC 握手直连。
+- **10 分钟超时平滑脱离与阶段性汇报 (Auto-Detaching & Graceful Handover)**：针对复杂长任务，在接近 10 分钟（默认 570 秒 / 9分30秒）命令截断临界点时，只要 Antigravity 仍在全速活跃执行，**绝不粗暴抛出异常截断命令**，而是先向 Codex 返回阶段性成功汇报（Exit Code 0），同时自动启动轻量后台守护进程（Daemon Tracker）持续盯盘直至修改完成与报告落盘，**从根本上彻底解决 10 分钟命令行超时强制截断顽疾**。
 - **转录流实时同步**：自动跟踪 `transcript.jsonl`，并将每一步工具调用（`view_file`、`replace_file_content`、`run_command`）动态投递至桌面悬浮窗。
 
 ### 通道二：FastMCP 标准服务网关 (`antigravity_execute` 等)
@@ -105,7 +106,7 @@ flowchart TD
 
 | 工具 / 接口 | 类型 | 核心能力 | 最佳适用场景 |
 |---|---|---|---|
-| **`agy -p`** | **全局命令行 (CLI)** | 官方 Headless 引擎直连，免 Key 无限并发，自动环境嗅探 | 批量生成单测、脚本跑测、终端自动化 |
+| **`agy -p`** | **全局命令行 (CLI)** | 官方 Headless 引擎直连，免 Key 无限并发，支持客户端自动唤醒与 10 分钟防超时平滑脱离 | 批量生成单测、脚本跑测、终端自动化、大型项目重构 |
 | **`antigravity_execute`** | **MCP 核心代码工具** | 免疫 Windows 引号转义，直接读写文件、改写代码、运行测试落盘 | 复杂技术规范代码落地、多文件协同重构 |
 | **`ask_antigravity`** | **MCP 智能工具** | 180s 内同步直出，超时平滑转后台报告并返回凭据 | 探索性提问、架构方案调研、技术选型 |
 | **`antigravity_code_review`** | **MCP 审查工具** | $\ge 3$ 文件 0.1s 秒转后台，1~2 文件 180s 智能熔断 | 大批量代码合规性与安全性深度审计 |
@@ -157,6 +158,10 @@ args = ["-u", "C:/Users/Administrator/.codex/mcp_servers/antigravity_mcp.py"]
 ```bash
 agy -p "参考 app/market/global_markets.py 的测试模式，为 app/market/industry_board.py 编写完整的单元测试覆盖，直接修改文件并运行 pytest，终端控制台汇报控制在 150 字以内。" --dangerously-skip-permissions --print-timeout 25m
 ```
+
+> **💡 自愈与防超时特性**：  
+> - **自动唤醒**：若 Antigravity 客户端未运行，`agy` 会自动检测并静默拉起桌面端，轮询至本地端口就绪后无缝执行；  
+> - **防 10 分钟截断**：若任务耗时接近 10 分钟（默认 570s），`agy` 会自动转入后台守护托管，先向 Codex 正常返回 Exit Code 0 与阶段进度汇报，后台轻量守护进程继续跟踪直至单测跑通并生成报告，避免命令被终端强制 kill；（若需严格同步阻塞等待，可附加 `--no-detach` 参数）。
 
 ### 范例 B：通过 MCP 执行复杂长 Prompt 代码落地（免转义）
 
