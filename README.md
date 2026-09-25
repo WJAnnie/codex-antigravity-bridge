@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/Engine-Gemini%203.8%20Flash%20Native-blueviolet.svg" alt="Engine" />
   <img src="https://img.shields.io/badge/Platform-Windows%20%2F%20Cross--Platform-lightgrey.svg" alt="Platform" />
   <img src="https://img.shields.io/badge/Anti--Timeout-Auto--Detaching-success.svg" alt="Anti-Timeout" />
-  <img src="https://img.shields.io/badge/Widget-v3.2%20NTFS%20Healed-critical.svg" alt="Widget v3.2" />
+  <img src="https://img.shields.io/badge/Widget-v3.3%20Sandbox%20Healed-critical.svg" alt="Widget v3.3" />
 </p>
 
 > **让 OpenAI Codex 零感知、无缝调度 Google Antigravity 高级多智能体进行重型代码落地与批量单测编写。内置“全自动防超时自愈引擎”与 Stdio 原生管道，彻底终结客户端 300 秒网关超时与命令行引号转义陷阱，配备 Win32 进程级深度感知与桌面极简悬浮监控窗。**
@@ -50,12 +50,13 @@ flowchart TD
     Native & CoreWorker --> Result[("📄 .antigravity_reports/<task_id>.md\n项目内标准 Markdown 报告落盘")]
     Native & CoreWorker --> Tasks[("📁 ~/.codex/mcp_servers/.tasks/<id>.json\n结构化生命周期元数据")]
 
-    Tasks -->|Win32 进程探针 + NTFS 深度感知| Widget["🎨 桌面极简悬浮监控窗 v3.2\n(实时秒表 / 状态卡片 / 纯净日志 / 一键预览)"]
+    Tasks -->|Win32 进程探针 + NTFS 深度感知| Widget["🎨 桌面极简悬浮监控窗 v3.3\n(实时秒表 / 状态卡片 / 纯净日志 / 一键预览)"]
 ```
 
 ### 通道一：官方 Headless CLI (`agy CLI`)
 - **零 Key、零额度限制**：基于官方 Antigravity Headless 接口（`language_server.exe agentapi new-conversation --model=flash`），依托本地官方账号会话，由 **Gemini 3.8 Flash 原生驱动**，完全不消耗第三方 API 费用。
-- **15ms 极速环境嗅探与自动唤醒 (Auto-Bootstrap)**：内置 `discover_antigravity_env()`，毫秒级探测运行中的 Antigravity 语言服务器端口与 CSRF Token；若客户端未运行，**自动静默拉起 Antigravity 桌面端并轮询健康就绪（上限 30s）**，彻底告别“未检测到运行中的 language_server.exe”引发的误判与中断。严格剥离外层 HTTP 代理，确保本地 gRPC 握手直连。
+- **15ms 极速环境嗅探与多通道自动唤醒 (Multi-Channel Auto-Bootstrap)**：内置 `discover_antigravity_env()`，毫秒级探测运行中的 Antigravity 语言服务器端口与 CSRF Token；若客户端未运行，**依次通过 Windows 原生 Shell、分离进程、Explorer 交互外壳与 PowerShell 多级自动静默拉起桌面客户端，并延长冷启动等待至 45 秒**，彻底告别“未检测到运行中的 language_server.exe”引发的误判与中断。
+- **Codex 沙箱安全隔离双轨自愈 (Sandbox & Capability SID Resilient)**：专门适配 Codex Desktop 的 Windows Capability SID 沙箱隔离模式（如以 `annie\codexsandboxoffline` 运行）。底层自动探测可写目录，在主用户目录只读受限时，**任务记录与审计日志零感知自动降级写入 `%TEMP%\codex_antigravity_tasks` 与临时日志**；同时彻底抑制所有非致命辅助遥测向 `sys.stderr` 报错，杜绝任何“目录无写权限”等虚假错误输出。
 - **10 分钟超时平滑脱离与阶段性汇报 (Auto-Detaching & Graceful Handover)**：针对复杂长任务，在接近 10 分钟（默认 570 秒 / 9分30秒）命令截断临界点时，只要 Antigravity 仍在全速活跃执行，**绝不粗暴抛出异常截断命令**，而是先向 Codex 返回阶段性成功汇报（Exit Code 0），同时自动启动轻量后台守护进程（Daemon Tracker）持续盯盘直至修改完成与报告落盘，**从根本上彻底解决 10 分钟命令行超时强制截断顽疾**。
 - **转录流实时同步**：自动跟踪 `transcript.jsonl`，并将每一步工具调用（`view_file`、`replace_file_content`、`run_command`）动态投递至桌面悬浮窗。
 
@@ -81,13 +82,15 @@ flowchart TD
 
 ---
 
-## 🎨 暗黑极简桌面悬浮监控窗 (Widget v3.2)
+## 🎨 暗黑极简桌面悬浮监控窗 (Widget v3.3)
 
 专为长任务状态跟踪量身定制的桌面小组件，具备工业级自愈防护：
 
+- **沙箱跨目录全景聚合 (Multi-Directory Tasks Support)**：
+  - 同时扫描宿主默认 `.tasks` 目录与沙箱降级 `%TEMP%\codex_antigravity_tasks` 临时目录，确保在受限安全沙箱中由 Codex 派发的所有长短任务均能 100% 呈现在桌面监控窗。
 - **Windows NTFS 目录时间戳自愈**：
   - 传统监控通过比对目录 `mtime` 判断是否有新任务，而在 Windows NTFS 底层，**原地更新已有 JSON 文件不会刷新父目录 mtime**！
-  - Widget v3.2 采用 `os.scandir` 文件签名扫描与 `os.utime` 显式同步机制，彻底攻克状态不刷新的系统级顽疾。
+  - Widget v3.3 采用 `os.scandir` 文件签名扫描与 `os.utime` 显式同步机制，彻底攻克状态不刷新的系统级顽疾。
 - **Win32 毫秒级进程存活探测**：
   - 弃用传统的假阳性句柄判断，底层调用 Windows `kernel32.WaitForSingleObject` (`WAIT_TIMEOUT == 258`) 配合 `GetExitCodeProcess` (`STILL_ACTIVE == 259`)，进程一旦退出毫秒级感知，**彻底消灭秒表持续走字至 98 分钟的悬挂现象**。
 - **BUSY 状态 2 秒主动自愈探针**：

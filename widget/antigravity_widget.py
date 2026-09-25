@@ -22,6 +22,7 @@ import re
 import json
 import base64
 import subprocess
+import tempfile
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk
@@ -39,6 +40,18 @@ except Exception:
 # Paths
 CONFIG_FILE = os.path.expanduser("~/.codex/mcp_servers/widget_config.json")
 TASKS_DIR = os.path.expanduser("~/.codex/mcp_servers/.tasks")
+TASKS_FALLBACK_DIR = os.path.join(tempfile.gettempdir(), "codex_antigravity_tasks")
+
+def get_all_task_dirs():
+    dirs = [TASKS_DIR, TASKS_FALLBACK_DIR]
+    seen = set()
+    res = []
+    for d in dirs:
+        norm = os.path.normcase(os.path.abspath(d))
+        if norm not in seen and os.path.exists(d):
+            seen.add(norm)
+            res.append(d)
+    return res
 
 def resolve_log_file() -> str:
     if "ANTIGRAVITY_LOG_FILE" in os.environ:
@@ -49,6 +62,9 @@ def resolve_log_file() -> str:
     repo_log = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mcp_servers", "antigravity.log")
     if os.path.exists(repo_log):
         return repo_log
+    temp_log = os.path.join(tempfile.gettempdir(), "antigravity.log")
+    if os.path.exists(temp_log):
+        return temp_log
     return home_log
 
 LOG_FILE = resolve_log_file()
@@ -1337,30 +1353,33 @@ class AntigravityWidget:
         """定期扫描 .tasks 与 antigravity.log，无缝同步状态"""
         try:
             tasks_updated = False
-            if os.path.exists(TASKS_DIR):
+            task_dirs = get_all_task_dirs()
+            if task_dirs:
                 latest_mtime = 0.0
                 file_count = 0
-                try:
-                    with os.scandir(TASKS_DIR) as it:
-                        for entry in it:
-                            if entry.name.endswith(".json") and entry.is_file():
-                                file_count += 1
-                                st = entry.stat()
-                                if st.st_mtime > latest_mtime:
-                                    latest_mtime = st.st_mtime
-                    sig = (file_count, latest_mtime)
-                    if sig != self.last_tasks_sig:
-                        self.last_tasks_sig = sig
-                        tasks_updated = True
-                except Exception:
-                    pass
+                for td in task_dirs:
+                    try:
+                        with os.scandir(td) as it:
+                            for entry in it:
+                                if entry.name.endswith(".json") and entry.is_file():
+                                    file_count += 1
+                                    st = entry.stat()
+                                    if st.st_mtime > latest_mtime:
+                                        latest_mtime = st.st_mtime
+                    except Exception:
+                        pass
+                sig = (file_count, latest_mtime)
+                if sig != self.last_tasks_sig:
+                    self.last_tasks_sig = sig
+                    tasks_updated = True
 
             log_updated = False
-            if os.path.exists(LOG_FILE):
-                mtime = os.path.getmtime(LOG_FILE)
-                if mtime != self.last_log_mtime:
-                    self.last_log_mtime = mtime
-                    log_updated = True
+            for lf in [LOG_FILE, os.path.join(tempfile.gettempdir(), "antigravity.log")]:
+                if os.path.exists(lf):
+                    mtime = os.path.getmtime(lf)
+                    if mtime != self.last_log_mtime:
+                        self.last_log_mtime = mtime
+                        log_updated = True
 
             # 运行中状态守卫：若当前处于 BUSY，至少每 2 秒主动复核一次 worker 状态，防止进程退出后界面悬挂
             now = time.time()
@@ -1379,14 +1398,25 @@ class AntigravityWidget:
         self.root.after(600, self.poll_state)
 
     def load_recent_tasks_data(self, limit=4):
-        """从 .tasks/*.json 读取结构化任务记录"""
-        if not os.path.exists(TASKS_DIR):
+        """从 .tasks/*.json 读取结构化任务记录（兼容主目录与临时沙箱目录）"""
+        task_dirs = get_all_task_dirs()
+        if not task_dirs:
             return []
 
-        task_files = [os.path.join(TASKS_DIR, f) for f in os.listdir(TASKS_DIR) if f.endswith(".json")]
-        if not task_files:
+        task_files_map = {}
+        for td in task_dirs:
+            try:
+                for f in os.listdir(td):
+                    if f.endswith(".json") and f not in task_files_map:
+                        full_p = os.path.join(td, f)
+                        task_files_map[f] = full_p
+            except Exception:
+                pass
+
+        if not task_files_map:
             return []
 
+        task_files = list(task_files_map.values())
         task_files.sort(key=os.path.getmtime, reverse=True)
         recent_tasks = []
 
@@ -1421,7 +1451,8 @@ class AntigravityWidget:
                             try:
                                 with open(pf, "w", encoding="utf-8") as wf:
                                     json.dump(rec, wf, ensure_ascii=False, indent=2)
-                                os.utime(TASKS_DIR, None)
+                                p_dir = os.path.dirname(pf)
+                                os.utime(p_dir, None)
                             except Exception:
                                 pass
 

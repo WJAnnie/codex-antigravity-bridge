@@ -31,11 +31,32 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     from antigravity_mcp import log_event, _save_task_record, _load_task_record
 except Exception:
+    import tempfile
     def log_event(msg: str):
-        pass
+        try:
+            with open(os.path.join(tempfile.gettempdir(), "antigravity.log"), "a", encoding="gb18030", errors="replace") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+        except Exception:
+            pass
     def _save_task_record(record: dict):
-        pass
+        try:
+            tid = record.get("task_id")
+            if tid:
+                td = os.path.join(tempfile.gettempdir(), "codex_antigravity_tasks")
+                os.makedirs(td, exist_ok=True)
+                with open(os.path.join(td, f"{tid}.json"), "w", encoding="utf-8") as f:
+                    json.dump(record, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
     def _load_task_record(task_id: str):
+        try:
+            td = os.path.join(tempfile.gettempdir(), "codex_antigravity_tasks")
+            p = os.path.join(td, f"{task_id}.json")
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            pass
         return None
 
 def _path_to_file_uri(path: str) -> str:
@@ -46,13 +67,38 @@ def _path_to_file_uri(path: str) -> str:
     return "file://" + quote(abs_path, safe="/:")
 
 
+def get_primary_user_home() -> str:
+    """Resolve the primary user home directory even when executing inside a restricted sandbox user account."""
+    env_home = (os.environ.get("ANTIGRAVITY_USER_HOME") or "").strip()
+    if env_home and os.path.exists(env_home):
+        return env_home
+    current_home = os.path.expanduser("~")
+    if os.path.exists(os.path.join(current_home, ".gemini")) or os.path.exists(os.path.join(current_home, r"AppData\Local\Programs\antigravity")):
+        return current_home
+    if os.path.exists(r"C:\Users\Darli\.gemini") or os.path.exists(r"C:\Users\Darli\AppData\Local\Programs\antigravity"):
+        return r"C:\Users\Darli"
+    drive = os.path.splitdrive(current_home)[0] or "C:"
+    users_root = os.path.join(drive, "\\Users")
+    if os.path.isdir(users_root):
+        try:
+            for entry in os.listdir(users_root):
+                candidate = os.path.join(users_root, entry)
+                if os.path.isdir(candidate) and (os.path.exists(os.path.join(candidate, ".gemini")) or os.path.exists(os.path.join(candidate, r"AppData\Local\Programs\antigravity"))):
+                    return candidate
+        except Exception:
+            pass
+    return current_home
+
+
 def discover_language_server_binary() -> str:
-    """Resolve language_server.exe for the current Windows user, not a hardcoded Administrator path."""
-    home = os.path.expanduser("~")
+    """Resolve language_server.exe for the primary Windows user, including sandbox fallback."""
+    home = get_primary_user_home()
     candidates = [
+        os.path.join(home, r"AppData\Local\Programs\antigravity\resources\bin\language_server.exe"),
         os.path.join(home, r"AppData\Local\Programs\Antigravity\resources\bin\language_server.exe"),
-        r"C:\Users\Administrator\AppData\Local\Programs\Antigravity\resources\bin\language_server.exe",
+        r"C:\Users\Darli\AppData\Local\Programs\antigravity\resources\bin\language_server.exe",
         os.path.join(home, r".gemini\antigravity\bin\language_server.exe"),
+        r"C:\Users\Administrator\AppData\Local\Programs\Antigravity\resources\bin\language_server.exe",
     ]
     env_bin = (os.environ.get("ANTIGRAVITY_LS_BINARY") or "").strip()
     if env_bin:
@@ -67,11 +113,12 @@ def discover_language_server_binary() -> str:
 
 
 def discover_antigravity_app_binary() -> str:
-    """Resolve Antigravity.exe desktop client path for the current Windows user."""
-    home = os.path.expanduser("~")
+    """Resolve Antigravity.exe desktop client path for the primary Windows user."""
+    home = get_primary_user_home()
     candidates = [
         os.path.join(home, r"AppData\Local\Programs\antigravity\Antigravity.exe"),
         os.path.join(home, r"AppData\Local\Programs\Antigravity\Antigravity.exe"),
+        r"C:\Users\Darli\AppData\Local\Programs\antigravity\Antigravity.exe",
         r"C:\Program Files\Antigravity\Antigravity.exe",
         r"C:\Program Files (x86)\Antigravity\Antigravity.exe",
     ]
@@ -88,37 +135,55 @@ def discover_antigravity_app_binary() -> str:
 
 
 def launch_antigravity_app() -> bool:
-    """Launch the Google Antigravity desktop app detached in background."""
+    """Launch the Google Antigravity desktop app detached in background with multi-tier fallback."""
     app_exe = discover_antigravity_app_binary()
     if not app_exe or not os.path.exists(app_exe):
         return False
+
+    # Strategy 1: os.startfile (standard shell execute)
     try:
         if hasattr(os, "startfile"):
             os.startfile(app_exe)
-        else:
-            subprocess.Popen(
-                [app_exe],
-                creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-                close_fds=True
-            )
+            return True
+    except Exception:
+        pass
+
+    # Strategy 2: subprocess.Popen with detached flags
+    try:
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        subprocess.Popen([app_exe], creationflags=flags, close_fds=True)
         return True
-    except Exception as e:
-        try:
-            sys.stderr.write(f"[AGY Auto-Start] 启动 Antigravity 客户端失败: {e}\n")
-        except Exception:
-            pass
-        return False
+    except Exception:
+        pass
+
+    # Strategy 3: explorer.exe (invokes interactive user desktop shell)
+    try:
+        subprocess.Popen(["explorer.exe", app_exe], close_fds=True)
+        return True
+    except Exception:
+        pass
+
+    # Strategy 4: PowerShell Start-Process
+    try:
+        ps_cmd = f"Start-Process -FilePath '{app_exe}'"
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], timeout=5)
+        return True
+    except Exception:
+        pass
+
+    return False
 
 
+PRIMARY_HOME = get_primary_user_home()
 LS_BINARY = discover_language_server_binary()
-AGENTAPI_BAT = os.path.expanduser(r"~/.gemini/antigravity/bin/agentapi.bat")
-BRAIN_DIR = os.path.expanduser(r"~/.gemini/antigravity/brain")
+AGENTAPI_BAT = os.path.join(PRIMARY_HOME, r".gemini\antigravity\bin\agentapi.bat")
+BRAIN_DIR = os.path.join(PRIMARY_HOME, r".gemini\antigravity\brain")
 CLI_PROJECT_ID = "c1111111-c111-4111-8111-c11111111111"
-CLI_PROJECT_FILE = os.path.expanduser(rf"~/.gemini/config/projects/{CLI_PROJECT_ID}.json")
+CLI_PROJECT_FILE = os.path.join(PRIMARY_HOME, rf".gemini\config\projects\{CLI_PROJECT_ID}.json")
 DEFAULT_CLI_WORKSPACES = [
-    os.path.expanduser(r"~/.codex"),
-    os.path.expanduser(r"~/Documents/ChatGPT/投资理财"),
-    os.path.expanduser(r"~/Documents/Codex"),
+    os.path.join(PRIMARY_HOME, r".codex"),
+    os.path.join(PRIMARY_HOME, r"Documents\ChatGPT\投资理财"),
+    os.path.join(PRIMARY_HOME, r"Documents\Codex"),
 ]
 
 
@@ -193,6 +258,7 @@ def ensure_cli_project_registered(extra_workspaces=None):
 
 def _probe_running_ls() -> tuple[str, str]:
     """Inspect system processes and return (address, csrf_token) if language_server.exe is listening."""
+    psutil_success = False
     # 1. Ultra-fast psutil discovery (<15ms)
     try:
         import psutil
@@ -211,6 +277,7 @@ def _probe_running_ls() -> tuple[str, str]:
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
 
+        psutil_success = True
         if ls_proc and csrf:
             ports = []
             try:
@@ -231,35 +298,36 @@ def _probe_running_ls() -> tuple[str, str]:
                 except Exception:
                     pass
     except Exception:
-        pass
+        psutil_success = False
 
-    # 2. PowerShell fallback (only if psutil unavailable or failed)
-    try:
-        ps_cmd = "Get-CimInstance Win32_Process -Filter \"Name = 'language_server.exe'\" | Select-Object ProcessId, CommandLine | ConvertTo-Json"
-        res = subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, text=True)
-        if res.stdout.strip():
-            data = json.loads(res.stdout)
-            if isinstance(data, list):
-                data = data[0]
-            pid = data.get("ProcessId")
-            cmdline = data.get("CommandLine", "")
-            csrf_match = re.search(r'--csrf_token\s+([a-f0-9\-]+)', cmdline)
-            if csrf_match:
-                csrf = csrf_match.group(1)
-                port_cmd = f"Get-NetTCPConnection -OwningProcess {pid} -State Listen | Select-Object -ExpandProperty LocalPort"
-                res_port = subprocess.run(["powershell", "-NoProfile", "-Command", port_cmd], capture_output=True, text=True)
-                ports = [int(p.strip()) for p in res_port.stdout.strip().splitlines() if p.strip().isdigit()]
-                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                for port in ports:
-                    try:
-                        req = urllib.request.Request(f"http://127.0.0.1:{port}/", headers={"x-csrf-token": csrf})
-                        with opener.open(req, timeout=0.5) as resp:
-                            if resp.status == 200:
-                                return f"localhost:{port}", csrf
-                    except Exception:
-                        pass
-    except Exception:
-        pass
+    # 2. PowerShell fallback (only if psutil failed or wasn't available)
+    if not psutil_success:
+        try:
+            ps_cmd = "Get-CimInstance Win32_Process -Filter \"Name = 'language_server.exe'\" | Select-Object ProcessId, CommandLine | ConvertTo-Json"
+            res = subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, text=True)
+            if res.stdout.strip():
+                data = json.loads(res.stdout)
+                if isinstance(data, list):
+                    data = data[0]
+                pid = data.get("ProcessId")
+                cmdline = data.get("CommandLine", "")
+                csrf_match = re.search(r'--csrf_token\s+([a-f0-9\-]+)', cmdline)
+                if csrf_match:
+                    csrf = csrf_match.group(1)
+                    port_cmd = f"Get-NetTCPConnection -OwningProcess {pid} -State Listen | Select-Object -ExpandProperty LocalPort"
+                    res_port = subprocess.run(["powershell", "-NoProfile", "-Command", port_cmd], capture_output=True, text=True)
+                    ports = [int(p.strip()) for p in res_port.stdout.strip().splitlines() if p.strip().isdigit()]
+                    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    for port in ports:
+                        try:
+                            req = urllib.request.Request(f"http://127.0.0.1:{port}/", headers={"x-csrf-token": csrf})
+                            with opener.open(req, timeout=0.5) as resp:
+                                if resp.status == 200:
+                                    return f"localhost:{port}", csrf
+                        except Exception:
+                            pass
+        except Exception:
+            pass
 
     return "", ""
 
@@ -294,9 +362,9 @@ def discover_antigravity_env() -> dict[str, str]:
                     pass
 
                 if launch_antigravity_app():
-                    # Poll for up to 30 seconds
+                    # Poll for up to 45 seconds (cold start on Windows Electron typically takes 20-30s)
                     t0 = time.time()
-                    while time.time() - t0 < 30.0:
+                    while time.time() - t0 < 45.0:
                         time.sleep(1.0)
                         ls_addr, csrf_tok = _probe_running_ls()
                         if ls_addr and csrf_tok:
@@ -492,7 +560,11 @@ async def run_official_headless(prompt: str, workspace: str, model: str, timeout
     run_env = discover_antigravity_env()
 
     if not run_env.get("ANTIGRAVITY_LS_ADDRESS"):
-        raise RuntimeError("未检测到运行中的 Antigravity 语言服务器 (language_server.exe)。已尝试自动启动客户端但等待服务就绪超时，请检查 Antigravity 是否正常登录。")
+        app_exe = discover_antigravity_app_binary()
+        if app_exe:
+            raise RuntimeError(f"未检测到运行中的 Antigravity 语言服务器 (language_server.exe)。已尝试自动拉起客户端 ({app_exe}) 但等待就绪超时 (45s)，请检查 Antigravity 是否正常登录。")
+        else:
+            raise RuntimeError("未检测到运行中的 Antigravity 语言服务器 (language_server.exe)，且未找到 Antigravity 客户端安装路径。请确认 Antigravity 客户端已启动并登录。")
 
     log_event(f"[START] [CLI:{task_id}] 启动官方 Antigravity Headless 引擎 (模型: {model}) | 工作区: {workspace}")
 

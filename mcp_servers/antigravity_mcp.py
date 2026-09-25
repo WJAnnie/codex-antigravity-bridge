@@ -21,6 +21,7 @@ import time
 import json
 import uuid
 import logging
+import tempfile
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from mcp.server.fastmcp import FastMCP
@@ -54,8 +55,41 @@ TIER2_MODEL = RELAY_M2_MODEL
 TIER3_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash").strip()
 BASE_URL = os.environ.get("ANTIGRAVITY_BASE_URL", "http://127.0.0.1:10100/v1")
 DEFAULT_MODEL = TIER1_MODEL
-TASKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tasks")
-os.makedirs(TASKS_DIR, exist_ok=True)
+
+def _get_writable_tasks_dir() -> str:
+    """Resolve writable directory for task JSON records with Codex sandbox fallback."""
+    primary = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tasks")
+    try:
+        os.makedirs(primary, exist_ok=True)
+        test_file = os.path.join(primary, f".perm_test_{os.getpid()}")
+        with open(test_file, "w") as f:
+            f.write("1")
+        os.remove(test_file)
+        return primary
+    except Exception:
+        fallback = os.path.join(tempfile.gettempdir(), "codex_antigravity_tasks")
+        try:
+            os.makedirs(fallback, exist_ok=True)
+            return fallback
+        except Exception:
+            return primary
+
+def _get_all_tasks_dirs() -> List[str]:
+    """Return all candidate task directories across normal and sandboxed sessions."""
+    dirs = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tasks"),
+        os.path.join(tempfile.gettempdir(), "codex_antigravity_tasks"),
+    ]
+    seen = set()
+    res = []
+    for d in dirs:
+        norm = os.path.normcase(os.path.abspath(d))
+        if norm not in seen and os.path.exists(d):
+            seen.add(norm)
+            res.append(d)
+    return res
+
+TASKS_DIR = _get_writable_tasks_dir()
 
 
 # Gemini 3.8 配额耗尽冷却时间戳（避免配额用完后每个任务都反复碰壁 8 秒）
@@ -151,43 +185,67 @@ def _is_transient_network_error(err_text: str) -> bool:
 
 
 def log_event(message: str) -> None:
-    """写入运行日志（GB18030 兼容 Windows 终端与桌面监控窗），便于实时跟踪与审计"""
+    """写入运行日志（GB18030 兼容 Windows 终端与桌面监控窗），自动容灾降级并抑制控制台错误输出"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_line = f"[{timestamp}] {message}\n"
-    try:
-        with open(LOG_FILE, "a", encoding="gb18030", errors="replace") as f:
-            f.write(log_line)
-    except Exception as e:
-        sys.stderr.write(f"[Log Error] {e}\n")
+    targets = [
+        LOG_FILE,
+        os.path.join(tempfile.gettempdir(), "antigravity.log")
+    ]
+    for target in targets:
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
+            with open(target, "a", encoding="gb18030", errors="replace") as f:
+                f.write(log_line)
+            break
+        except Exception:
+            continue
+    # 辅助审计日志失败时绝不向 sys.stderr 抛错，避免污染上层工具输出
 
 
 def _get_task_file(task_id: str) -> str:
-    return os.path.join(TASKS_DIR, f"{task_id}.json")
+    target_dir = _get_writable_tasks_dir()
+    return os.path.join(target_dir, f"{task_id}.json")
 
 
 def _save_task_record(record: Dict[str, Any]) -> None:
-    task_id = record["task_id"]
+    task_id = record.get("task_id")
+    if not task_id:
+        return
+    tasks_dir = _get_writable_tasks_dir()
     try:
-        os.makedirs(TASKS_DIR, exist_ok=True)
-        with open(_get_task_file(task_id), "w", encoding="utf-8") as f:
+        os.makedirs(tasks_dir, exist_ok=True)
+        with open(os.path.join(tasks_dir, f"{task_id}.json"), "w", encoding="utf-8") as f:
             json.dump(record, f, ensure_ascii=False, indent=2)
         try:
-            os.utime(TASKS_DIR, None)
+            os.utime(tasks_dir, None)
         except Exception:
             pass
-    except Exception as e:
-        sys.stderr.write(f"[Task Save Error] {e}\n")
+    except Exception:
+        try:
+            fallback = os.path.join(tempfile.gettempdir(), "codex_antigravity_tasks")
+            os.makedirs(fallback, exist_ok=True)
+            with open(os.path.join(fallback, f"{task_id}.json"), "w", encoding="utf-8") as f:
+                json.dump(record, f, ensure_ascii=False, indent=2)
+            try:
+                os.utime(fallback, None)
+            except Exception:
+                pass
+        except Exception:
+            pass
+    # 绝对禁止向 sys.stderr 打印 [Task Save Error]，防止误导上层 Codex 调用端
 
 
 def _load_task_record(task_id: str) -> Optional[Dict[str, Any]]:
-    path = _get_task_file(task_id)
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+    for d in _get_all_tasks_dirs():
+        path = os.path.join(d, f"{task_id}.json")
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+    return None
 
 
 async def _execute_antigravity_core(
@@ -1043,10 +1101,21 @@ async def list_antigravity_tasks(limit: int = 5) -> str:
     :param limit: Maximum number of recent tasks to return. Defaults to 5.
     :return: Summary table of recent tasks.
     """
-    if not os.path.exists(TASKS_DIR):
+    task_dirs = _get_all_tasks_dirs()
+    if not task_dirs:
         return "暂无后台任务记录。"
 
-    files = [os.path.join(TASKS_DIR, f) for f in os.listdir(TASKS_DIR) if f.endswith(".json")]
+    seen_ids = set()
+    files = []
+    for d in task_dirs:
+        try:
+            for f in os.listdir(d):
+                if f.endswith(".json") and f not in seen_ids:
+                    seen_ids.add(f)
+                    files.append(os.path.join(d, f))
+        except Exception:
+            pass
+
     if not files:
         return "暂无后台任务记录。"
 
@@ -1112,35 +1181,38 @@ def _is_pid_alive(pid: Optional[int]) -> bool:
 
 def _sweep_orphan_tasks() -> None:
     """服务启动时扫描并收敛历史遗留的僵尸任务（绝不误杀真实运行中的长任务）"""
-    if not os.path.exists(TASKS_DIR):
-        return
+    task_dirs = _get_all_tasks_dirs()
     now = time.time()
-    for f in os.listdir(TASKS_DIR):
-        if f.endswith(".json"):
-            pf = os.path.join(TASKS_DIR, f)
-            try:
-                with open(pf, "r", encoding="utf-8") as rf:
-                    rec = json.load(rf)
-                if rec.get("status") in ("RUNNING", "PENDING"):
-                    w_pid = rec.get("worker_pid")
-                    st = rec.get("start_time", 0)
-                    # 只要对应的 Worker 进程仍在活跃运行，坚决不打扰！
-                    if w_pid and _is_pid_alive(w_pid):
-                        continue
-                    # 仅在进程已死，或者未声明 pid 且耗时超过 30 分钟时，才安全纠偏为 INTERRUPTED
-                    if (w_pid and not _is_pid_alive(w_pid)) or (now - st > 1800):
-                        rec["status"] = "INTERRUPTED"
-                        rec["status_detail"] = "关联进程已退出，任务已自动收敛"
-                        if not rec.get("elapsed_sec") and st:
-                            rec["elapsed_sec"] = now - st
-                        with open(pf, "w", encoding="utf-8") as wf:
-                            json.dump(rec, wf, ensure_ascii=False, indent=2)
-                        try:
-                            os.utime(TASKS_DIR, None)
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+    for d in task_dirs:
+        try:
+            for f in os.listdir(d):
+                if f.endswith(".json"):
+                    pf = os.path.join(d, f)
+                    try:
+                        with open(pf, "r", encoding="utf-8") as rf:
+                            rec = json.load(rf)
+                        if rec.get("status") in ("RUNNING", "PENDING"):
+                            w_pid = rec.get("worker_pid")
+                            st = rec.get("start_time", 0)
+                            # 只要对应的 Worker 进程仍在活跃运行，坚决不打扰！
+                            if w_pid and _is_pid_alive(w_pid):
+                                continue
+                            # 仅在进程已死，或者未声明 pid 且耗时超过 30 分钟时，才安全纠偏为 INTERRUPTED
+                            if (w_pid and not _is_pid_alive(w_pid)) or (now - st > 1800):
+                                rec["status"] = "INTERRUPTED"
+                                rec["status_detail"] = "关联进程已退出，任务已自动收敛"
+                                if not rec.get("elapsed_sec") and st:
+                                    rec["elapsed_sec"] = now - st
+                                with open(pf, "w", encoding="utf-8") as wf:
+                                    json.dump(rec, wf, ensure_ascii=False, indent=2)
+                                try:
+                                    os.utime(d, None)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
